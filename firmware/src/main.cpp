@@ -12,6 +12,9 @@
 
 #include "config.h"
 #include "drive_core.h"
+#if DRIVE_PROFILE
+#include "profiler.h"  // profiling build only (pio run -e profile)
+#endif
 
 namespace {
 
@@ -77,6 +80,16 @@ void send_status(uint32_t now_ms) {
   if (Serial.availableForWrite() >= static_cast<int>(length)) Serial.write(wire, length);  // never block the control loop
 }
 
+#if DRIVE_PROFILE
+void send_profile() {
+  uint8_t payload[profiler::kReportPayload];
+  const size_t payload_length = profiler::build_report(payload);
+  uint8_t wire[drive::kMaxWire];
+  const size_t length = drive::encode_packet(profiler::kTypeProfile, tx_seq++, payload, payload_length, wire);
+  if (Serial.availableForWrite() >= static_cast<int>(length)) Serial.write(wire, length);
+}
+#endif
+
 }  // namespace
 
 void setup() {
@@ -93,9 +106,15 @@ void setup() {
   const esp_task_wdt_config_t watchdog = {LOOP_WATCHDOG_MS, 1u << 0, true};
   esp_task_wdt_reconfigure(&watchdog);
 #endif
+#if DRIVE_PROFILE
+  profiler::begin();
+#endif
 }
 
 void loop() {
+#if DRIVE_PROFILE
+  profiler::loop_begin();
+#endif
   drive::Packet packet;
   drive::DriveCommand command;
   // One timestamp per pass. Stamping commands with a later millis() than the control update below made a command
@@ -119,5 +138,9 @@ void loop() {
     last_status_ms = now_ms;
     send_status(now_ms);
   }
+#if DRIVE_PROFILE
+  if (profiler::report_due()) send_profile();  // counted in this pass's busy time, so the measurement errs high
+  profiler::loop_end();
+#endif
   delay(1);  // yield to the idle task (keeps the task watchdog quiet)
 }

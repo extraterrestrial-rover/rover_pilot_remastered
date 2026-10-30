@@ -62,6 +62,7 @@ firmware/                      PlatformIO project for the drive ESP32 (DOIT ESP3
   include/config.h             pins, directions, timeout, speed calibration, slew rate
   lib/drive_core/              protocol + safety state machine (plain C++, unit-tested on the PC)
   src/main.cpp                 ESP32 glue: serial, PWM, LED, watchdog
+  src/profiler.cpp             CPU, loop-time, heap and stack measurement (profiling build only: pio run -e profile)
   test/test_native/            unit tests: pio test -e native
 ros2_ws/src/rover_pilot_remastered/   ROS 2 Humble package (Python)
   rover_pilot_remastered/      base_teleop, drive_node, fake_esp (simulator), protocol, kinematics, logic
@@ -72,6 +73,7 @@ ros2_ws/src/rover_pilot_remastered/   ROS 2 Humble package (Python)
 tools/gen_test_vectors.py      generates byte-exact test vectors shared by the C++ and Python tests
 tools/wheel_test.py            ROS-free wheel identification test for the bench
 tools/rehearsal.py             dress rehearsal of the bench test against the simulated ESP32 and PS5
+tools/profile.py               measures the ESP32's CPU load and memory under worst-case commands (profiling build)
 udev/99-rover-drive.rules      stable /dev/rover-drive name for the ESP32
 ```
 
@@ -222,6 +224,27 @@ python3 tools/gen_test_vectors.py --check                          # C++ and Pyt
 
 On a machine with ROS sourced, add `-p no:launch_testing -p no:launch_ros` to pytest if ROS's own pytest plugins complain.
 
+## Measuring CPU and memory
+
+The profiling build is the same firmware plus a measurement module (`src/profiler.cpp`) that reports once a second in a `PROFILE` packet. The normal build (`esp32doit-devkit-v1`) compiles none of it, so its machine code is unchanged.
+
+- **CPU load per core**: FreeRTOS counts how long each core's idle task runs; load = 1 − idle time / elapsed time, per 100 ms window. It counts everything the chip does (this firmware, the serial and PWM drivers, the watchdog, task switches), not only the drive code. **Peak** is the busiest 100 ms window. The firmware runs on core 1; core 0 runs only system tasks.
+- **Loop passes**: how long each pass of `loop()` is busy, from its start to `delay(1)`. A pass starts every 1000 µs, so the longest pass shows the headroom.
+- **Memory**: free heap and its lowest value since boot; the most of the loop task's 8 KB stack ever used.
+- **The profiler's own time**, so it can be subtracted: the normal firmware is that much lighter.
+- **GPIO 21** is high while `loop()` is busy, for a logic analyser or scope (`-DPROFILE_MARKER_PIN=-1` turns it off).
+
+Wheels off the ground, `drive_node` stopped (only one program may use the port):
+
+```bash
+cd firmware && pio run -e profile -t upload                    # 1. flash the profiling build
+python3 tools/profile.py /dev/rover-drive                       # 2. 120 s of worst-case load, one line a second, then a summary
+python3 tools/profile.py /dev/rover-drive --load idle           #    neutral commands only, for comparison
+cd firmware && pio run -e esp32doit-devkit-v1 -t upload         # 3. flash the normal firmware back
+```
+
+The worst-case load is what `drive_node` sends (`DRIVE_COMMAND` at 50 Hz) with wheel targets that change on every command (`--percent`, default 30 % of full speed), so the ramp works on all four wheels on every control tick; plus 3 back-to-back commands every 2 s and garbage bytes every 5 s (the decoder's error path). `--seconds` sets the length. The summary ends with the reminder to flash the normal firmware back; `tools/wheel_test.py` then shows **fw 2.0.2**. Flash and static RAM use come from the normal build's `pio run -e esp32doit-devkit-v1` output.
+
 ## Serial protocol
 
 The same framing as the rover's planned CAN-master link: `version | type | seq | payload | CRC-16/CCITT-FALSE`, COBS-encoded, `0x00`-terminated, at 115200 8N1. Multi-byte fields are little-endian.
@@ -230,6 +253,7 @@ The same framing as the rover's planned CAN-master link: `version | type | seq |
 |---|---|---|---|
 | `0x82` DRIVE_COMMAND | PC → ESP32 | 50 Hz | `flags` u8 (bit 0 = e-stop) + 4 × int16 wheel targets FL, FR, RL, RR in 0.1 rpm (positive = forward) |
 | `0x04` DRIVE_STATUS | ESP32 → PC | 10 Hz | state, command age ms, 4 × int16 applied PWM, rx good/bad, uptime ms, reset reason, `MAX_WHEEL_RPM`×10, firmware version |
+| `0x05` PROFILE | ESP32 → PC | 1 Hz | profiling build only: CPU load, loop time, heap, stack (layout in `firmware/src/profiler.cpp`); `drive_node` ignores it |
 
 States: `BOOT`, `NO_COMMAND`, `ESTOP`, `WAIT_NEUTRAL`, `DRIVING`. The firmware is open-loop: it maps target rpm to PWM using `MAX_WHEEL_RPM`, because there are no encoders yet. When the CAN master/slave firmware arrives, the same `/cmd_vel` and e-stop topics will feed the onboard bridge (`telemetry_dashboard/bridge`, `drive:` section of its config) instead of `drive_node`, and the slaves will close the loop on their encoders. The bridge sends the same `DRIVE_COMMAND` (`0x82`) bytes to the CAN master, which applies the same rules (300 ms timeout, neutral interlock, e-stop latch); the firmware contract is `telemetry_dashboard/docs/FIRMWARE_INTERFACE_SPEC.md` (v2.0 on the `ethernet-udp` branch, v1.1 on `usb-serial`). Stop `drive_node` before the bridge drives: only one of them should follow `/cmd_vel`.
 
