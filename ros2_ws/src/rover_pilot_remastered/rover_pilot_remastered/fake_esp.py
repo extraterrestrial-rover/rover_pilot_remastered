@@ -6,6 +6,8 @@ open-loop rpm -> PWM, DRIVE_STATUS at 10 Hz.
 
     ros2 run rover_pilot_remastered fake_esp --link /tmp/rover-drive
     ros2 launch rover_pilot_remastered rover.launch.py port:=/tmp/rover-drive
+
+Simulator wraps it for tests and tools/rehearsal.py: the same calls on every branch, whatever the link is (LINK.md).
 """
 from __future__ import annotations
 
@@ -130,6 +132,69 @@ def start_in_background(max_wheel_rpm: float = 94.7) -> tuple[FakeEsp, str]:
     fake = FakeEsp(fd, max_wheel_rpm)
     threading.Thread(target=fake.run, name='fake-esp', daemon=True).start()
     return fake, path
+
+
+class Simulator:
+    """The simulated ESP32 on this branch's link (here a pseudo-terminal at `path`), for tests and tools/rehearsal.py.
+
+    The other branch has a Simulator with the same methods, so the rehearsal does not depend on the link.
+    """
+
+    def __init__(self, path: str = '/tmp/rover-drive-sim') -> None:
+        self.path = path
+        self.fake: FakeEsp | None = None
+        self._plug()
+
+    @property
+    def launch_arguments(self) -> list[str]:
+        """What rover.launch.py needs to reach this ESP32."""
+        return [f'port:={self.path}']
+
+    @property
+    def tool_arguments(self) -> list[str]:
+        """What tools/wheel_test.py and tools/profile.py need to reach it."""
+        return [self.path]
+
+    def state(self) -> tuple[int, tuple[int, int, int, int]] | None:
+        """(state, PWM per wheel) as the ESP32 has it now; None while it is unplugged (over USB: off)."""
+        if self.fake is None:
+            return None
+        with self.fake.lock:
+            return self.fake.controller.state, self.fake.controller.pwm()
+
+    def reset(self) -> None:
+        """The EN button: the ESP32 reboots, the link stays."""
+        if self.fake is not None:
+            with self.fake.lock:
+                self.fake.controller = FakeController(self.fake.controller.max_wheel_rpm)
+
+    def unplug(self) -> None:
+        """The link cable is pulled. Over USB that is also the ESP32's power, so it stops."""
+        if self.fake is None:
+            return
+        self.fake.stop_event.set()
+        self._thread.join(2)
+        os.close(self._fd)  # the drive node's port now fails, as when the cable is pulled
+        Path(self.path).unlink(missing_ok=True)
+        self.fake = None
+
+    def plug(self) -> None:
+        """The cable is back. Over USB the ESP32 boots again (motors off until a neutral command)."""
+        if self.fake is None:
+            self._plug()
+
+    def close(self) -> None:
+        self.unplug()
+
+    def _plug(self) -> None:
+        self._fd, real_path = open_pty()
+        self.fake = FakeEsp(self._fd)
+        self._thread = threading.Thread(target=self.fake.run, name='fake-esp', daemon=True)
+        self._thread.start()
+        link = Path(self.path)
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(real_path)
 
 
 def main(argv: list[str] | None = None) -> int:

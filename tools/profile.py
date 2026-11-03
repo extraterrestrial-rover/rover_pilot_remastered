@@ -2,8 +2,8 @@
 """Measure the drive ESP32's CPU load, loop time, heap and stack. Needs the PROFILING firmware. WHEELS OFF THE GROUND.
 
     cd firmware && pio run -e profile -t upload                   # 1. flash the profiling build
-    python3 tools/profile.py /dev/rover-drive                       # 2. 120 s of worst-case load, then a summary
-    python3 tools/profile.py /dev/rover-drive --load idle           #    neutral commands only, for comparison
+    python3 tools/profile.py                                        # 2. 120 s of worst-case load, then a summary
+    python3 tools/profile.py --load idle                            #    neutral commands only, for comparison
     cd firmware && pio run -e esp32doit-devkit-v1 -t upload        # 3. flash the normal firmware back (fw 2.0.2)
 
 Stop drive_node first: only one program may use the port. Needs only pyserial.
@@ -46,7 +46,7 @@ def parse_profile(payload: bytes) -> dict | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('port')
+    parser.add_argument('port', nargs='?', default='/dev/rover-drive', help='the ESP32 (default: the udev name)')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--seconds', type=float, default=120.0, help='length of the measurement')
     parser.add_argument('--load', choices=('worst', 'idle'), default='worst', help='worst: changing targets, bursts, '

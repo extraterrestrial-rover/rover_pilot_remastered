@@ -5,7 +5,7 @@ Spins each wheel forward on its own, then all forward, then a right turn, printi
 flashing to check that FL/FR/RL/RR are the wheels you think they are and that "forward" really is forward.
 Needs only pyserial (pip install pyserial). Stop the drive node first: only one program may use the port.
 
-    python3 tools/wheel_test.py /dev/rover-drive            # default 30 % of full speed
+    python3 tools/wheel_test.py                             # /dev/rover-drive, 30 % of full speed
     python3 tools/wheel_test.py /dev/ttyUSB0 --percent 50
 """
 import argparse
@@ -23,7 +23,7 @@ ZERO = (0.0, 0.0, 0.0, 0.0)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('port')
+    parser.add_argument('port', nargs='?', default='/dev/rover-drive', help='the ESP32 (default: the udev name)')
     parser.add_argument('--baud', type=int, default=115200)
     parser.add_argument('--percent', type=float, default=30.0, help='speed as a percentage of full PWM')
     parser.add_argument('--seconds', type=float, default=2.0, help='duration of each step')

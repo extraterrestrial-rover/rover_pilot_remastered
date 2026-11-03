@@ -1,0 +1,5 @@
+#!/bin/sh
+# Git hook (installed by tools/install_hooks.sh): after `git switch <branch>`, rebuild ros2_ws so `ros2 launch` runs
+# this branch's code, and show what the branch needs. Arguments: previous HEAD, new HEAD, 1 for a branch checkout.
+[ "$3" = 1 ] && [ "$1" != "$2" ] || exit 0  # file checkouts and `git switch -c` change nothing to rebuild
+exec "$(git rev-parse --show-toplevel)/tools/git-hooks/after-update.sh"

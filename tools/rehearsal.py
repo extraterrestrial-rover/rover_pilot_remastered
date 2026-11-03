@@ -3,8 +3,9 @@
 
 Runs the real launch files and parameter files (`ros2 launch ... rover.launch.py` / `base_station.launch.py`) against
 the simulated ESP32, presses the PS5 buttons in the README's order, and times every stop. Stand-ins: the ESP32 is
-fake_esp on a pseudo-terminal inside this process; the PS5 is this script publishing /joy the way joy's
-game_controller_node does (20 Hz autorepeat); "unplugging" either of them stops it. Nothing touches real hardware.
+fake_esp.Simulator on this branch's link (LINK.md) inside this process; the PS5 is this script publishing /joy the way
+joy_node does (20 Hz autorepeat), with the axis and button numbers from config/drive.yaml; "unplugging" either of them
+stops it. Nothing touches real hardware.
 
 Needs ROS 2 Humble and this workspace built and sourced, with the RMW and ROS_DOMAIN_ID you use on the rover:
     source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
@@ -28,45 +29,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'ros2_ws' / 'src' / 'rover_pilot_remastered'))
 
 import rclpy  # noqa: E402
+import yaml  # noqa: E402
 from diagnostic_msgs.msg import DiagnosticArray  # noqa: E402
 from rclpy.executors import SingleThreadedExecutor  # noqa: E402
 from sensor_msgs.msg import Joy  # noqa: E402
 
 from rover_pilot_remastered import fake_esp  # noqa: E402
 
-LINK = '/tmp/rover-drive-rehearsal'
-CIRCLE, OPTIONS, L1 = 1, 6, 9  # config/drive.yaml defaults (PS5 through game_controller_node)
+# The base station's joystick mapping, as base_teleop gets it from the launch file.
+TELEOP = yaml.safe_load((ROOT / 'ros2_ws' / 'src' / 'rover_pilot_remastered' / 'config' / 'drive.yaml').read_text())['base_teleop']['ros__parameters']
+CIRCLE, OPTIONS, L1 = TELEOP['estop_button'], TELEOP['release_button'], TELEOP['slow_button']  # e-stop, release, slow
 STOPPED = (0, 0, 0, 0)
 NAMES = fake_esp.protocol.STATE_NAMES
-
-
-class SimulatedEsp:
-    """fake_esp on a fresh pseudo-terminal, reachable at LINK (the stand-in for /dev/rover-drive)."""
-
-    def __init__(self) -> None:
-        self.fd, path = fake_esp.open_pty()
-        self.fake = fake_esp.FakeEsp(self.fd)
-        self.thread = threading.Thread(target=self.fake.run, name='fake-esp', daemon=True)
-        self.thread.start()
-        link = Path(LINK)
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(path)
-
-    def read(self) -> tuple[int, tuple[int, ...]]:
-        with self.fake.lock:
-            return self.fake.controller.state, self.fake.controller.pwm()
-
-    def reset(self) -> None:
-        """The EN button: the ESP32 reboots, USB stays connected."""
-        with self.fake.lock:
-            self.fake.controller = fake_esp.FakeController(self.fake.controller.max_wheel_rpm)
-
-    def unplug(self) -> None:
-        self.fake.stop_event.set()
-        self.thread.join(2)
-        os.close(self.fd)  # the drive node's port now fails, as when the USB cable is pulled
-        Path(LINK).unlink(missing_ok=True)
+FIRMWARE = '.'.join(map(str, fake_esp.FIRMWARE_VERSION))  # what this branch's firmware reports
 
 
 class Ps5:
@@ -82,9 +57,13 @@ class Ps5:
     def publish(self) -> None:
         if not self.plugged:
             return
+        linear, angular = TELEOP['axis_linear'], TELEOP['axis_angular']
+        axes = [0.0] * max(8, linear + 1, angular + 1)
+        axes[linear] = -self.left_y if TELEOP.get('invert_linear', False) else self.left_y
+        axes[angular] = -self.right_x if TELEOP.get('invert_angular', False) else self.right_x
         message = Joy()
-        message.axes = [0.0, self.left_y, self.right_x, 0.0, 1.0, 1.0]
-        message.buttons = [1 if index in self.pressed else 0 for index in range(15)]
+        message.axes = axes
+        message.buttons = [1 if index in self.pressed else 0 for index in range(max(15, CIRCLE + 1, OPTIONS + 1, L1 + 1))]
         self.publisher.publish(message)
 
     def set(self, left_y: float = 0.0, right_x: float = 0.0, pressed: tuple[int, ...] = ()) -> None:
@@ -145,7 +124,7 @@ class Rehearsal:
         self.executor.add_node(self.node)
         self.spinner = threading.Thread(target=self.executor.spin, daemon=True)
         self.spinner.start()
-        self.esp: SimulatedEsp | None = None
+        self.esp: fake_esp.Simulator | None = None
         self.rover: Launch | None = None
         self.base: Launch | None = None
 
@@ -156,7 +135,7 @@ class Rehearsal:
 
     # ------------------------------------------------------------------ helpers
     def state(self) -> tuple[int, tuple[int, ...]] | None:
-        return self.esp.read() if self.esp else None
+        return self.esp.state() if self.esp else None
 
     def wait(self, condition, timeout: float) -> float | None:
         started = time.monotonic()
@@ -186,7 +165,7 @@ class Rehearsal:
         return bool(ok)
 
     def start_rover(self) -> None:
-        self.rover = Launch('rover', self.logs, 'rover.launch.py', f'port:={LINK}', f'wheels:={self.wheels}')
+        self.rover = Launch('rover', self.logs, 'rover.launch.py', *self.esp.launch_arguments, f'wheels:={self.wheels}')
 
     def start_base(self) -> None:
         self.base = Launch('base_station', self.logs, 'base_station.launch.py', f'wheels:={self.wheels}')
@@ -209,8 +188,10 @@ class Rehearsal:
 
         source = ROOT / 'ros2_ws' / 'src' / 'rover_pilot_remastered'
         share = Path(get_package_share_directory('rover_pilot_remastered'))
-        modules = next(Path(get_package_prefix('rover_pilot_remastered')).glob('lib/python3*/site-packages/rover_pilot_remastered'))
-        pairs = [(path, modules / path.name) for path in (source / 'rover_pilot_remastered').glob('*.py')]
+        modules = next(Path(get_package_prefix('rover_pilot_remastered')).glob('lib/python3*/site-packages/rover_pilot_remastered'), None)
+        # With older setuptools, --symlink-install installs the Python package in develop mode (it imports the source
+        # itself, nothing to compare); newer ones copy it into site-packages.
+        pairs = [(path, modules / path.name) for path in (source / 'rover_pilot_remastered').glob('*.py')] if modules else []
         pairs += [(path, share / path.relative_to(source)) for pattern in ('config/*.yaml', 'config/wheels/*.yaml', 'launch/*.py')
                   for path in source.glob(pattern)]
         return [str(src.relative_to(source)) for src, installed in pairs if not installed.exists() or installed.read_bytes() != src.read_bytes()]
@@ -222,10 +203,10 @@ class Rehearsal:
         if not self.check('installed package matches the source', not stale, 'up to date' if not stale else
                           f"rebuild first (cd ros2_ws && colcon build --symlink-install): {', '.join(stale)}"):
             return False
-        self.esp = SimulatedEsp()
+        self.esp = fake_esp.Simulator()
 
         print('\n1. Wheel test (tools/wheel_test.py, drive node not running)', flush=True)
-        result = subprocess.run([sys.executable, str(ROOT / 'tools' / 'wheel_test.py'), LINK, '--seconds', '0.6'],
+        result = subprocess.run([sys.executable, str(ROOT / 'tools' / 'wheel_test.py'), *self.esp.tool_arguments, '--seconds', '0.6'],
                                 capture_output=True, text=True, timeout=60)
         (self.logs / 'wheel_test.log').write_text(result.stdout + result.stderr)
         lines = result.stdout.splitlines()
@@ -240,7 +221,8 @@ class Rehearsal:
         # 30 % of full PWM: 28.4 rpm on the wire, PWM 76 (rounded like the firmware).
         speed = round(round(94.7 * 0.3 * 10) / 10 / 94.7 * 255)
         self.check('wheel test exits cleanly', result.returncode == 0, f'exit {result.returncode}')
-        self.check('wheel test reports fw 2.0.2', 'fw 2.0.2' in result.stdout, 'fw 2.0.2' if 'fw 2.0.2' in result.stdout else 'version missing')
+        self.check(f'wheel test reports fw {FIRMWARE}', f'fw {FIRMWARE}' in result.stdout,
+                   f'fw {FIRMWARE}' if f'fw {FIRMWARE}' in result.stdout else 'version missing')
         for index, wheel in enumerate(('FL', 'FR', 'RL', 'RR')):
             expected = tuple(speed if i == index else 0 for i in range(4))
             self.check(f'wheel test: {wheel} forward only', step_pwm(f'{wheel} forward only') == expected, str(step_pwm(f'{wheel} forward only')))
@@ -248,8 +230,8 @@ class Rehearsal:
         self.check('wheel test: turn right in place', step_pwm('turn right in place') == (speed, -speed, speed, -speed),
                    str(step_pwm('turn right in place')))
         self.check('wheel test leaves the ESP32 in e-stop', self.wait(lambda s: s == (fake_esp.ESTOP, STOPPED), 1.0) is not None)
-        self.esp.unplug()
-        self.esp = SimulatedEsp()  # a freshly booted ESP32, so only the drive node can move it out of BOOT
+        self.esp.close()
+        self.esp = fake_esp.Simulator()  # a freshly booted ESP32, so only the drive node can move it out of BOOT
 
         print('\n2. Daily workflow: launch the rover and the base station', flush=True)
         self.start_rover()
@@ -332,12 +314,12 @@ class Rehearsal:
         self.check('sticks centred: driving again', self.wait(lambda s: s == (fake_esp.DRIVING, STOPPED), 2.0) is not None)
 
         self.drive_forward()
-        self.esp.unplug()  # the ESP32 loses USB power, so its motors stop with it
+        self.esp.unplug()  # the link cable is pulled (over USB the ESP32 loses its power with it)
         time.sleep(1.5)
-        self.check('ESP32 USB unplugged: the drive node notices and keeps running',
-                   'lost' in self.rover.text() and self.rover.process.poll() is None, 'port lost logged' if 'lost' in self.rover.text() else 'not logged')
-        self.esp = SimulatedEsp()  # plugged back in: the ESP32 boots
-        self.check('USB back with the stick still pushed: the ESP32 waits for neutral',
+        self.check('link cable pulled: the drive node notices and keeps running',
+                   'lost' in self.rover.text() and self.rover.process.poll() is None, 'link lost logged' if 'lost' in self.rover.text() else 'not logged')
+        self.esp.plug()
+        self.check('link back with the stick still pushed: the ESP32 waits for neutral',
                    self.wait(lambda s: s[0] == fake_esp.WAIT_NEUTRAL, 4.0) is not None and self.holds(lambda s: s[1] == STOPPED, 0.5))
         self.ps5.set()
         self.check('sticks centred: driving again', self.wait(lambda s: s == (fake_esp.DRIVING, STOPPED), 2.0) is not None)
@@ -353,7 +335,7 @@ class Rehearsal:
         self.drive_forward()
         time.sleep(1.5)
         diagnostics = dict(self.diagnostics)
-        self.check('/diagnostics: firmware 2.0.2', diagnostics.get('firmware') == '2.0.2', diagnostics.get('firmware', 'none'))
+        self.check(f'/diagnostics: firmware {FIRMWARE}', diagnostics.get('firmware') == FIRMWARE, diagnostics.get('firmware', 'none'))
         self.check('/diagnostics: esp_rx_bad stays 0', diagnostics.get('esp_rx_bad') == '0', diagnostics.get('esp_rx_bad', 'none'))
         self.check('/diagnostics: driving', diagnostics.get('_message') == 'driving', diagnostics.get('_message', 'none'))
 
@@ -371,7 +353,7 @@ class Rehearsal:
             if launch is not None and launch.process.poll() is None:
                 launch.ctrl_c()
         if self.esp is not None:
-            self.esp.unplug()
+            self.esp.close()
         self.executor.shutdown()
         self.spinner.join(5)  # destroying the node under a spinning executor aborts the process
         self.node.destroy_node()

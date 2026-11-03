@@ -6,6 +6,7 @@ Full stick defaults to the rover's top speed, derived from the same wheel profil
 from __future__ import annotations
 
 import signal
+import threading
 import time
 
 import rclpy
@@ -90,11 +91,16 @@ class BaseTeleop(Node):
 
 def main(args: list[str] | None = None) -> None:
     # rclpy's own SIGINT handler shuts the context down before `finally` runs, so a final publish would fail. Without
-    # it, Ctrl-C (also from `ros2 launch`) raises KeyboardInterrupt and the context stays usable for stop_rover().
+    # it, the context stays usable for stop_rover(). Ctrl-C (also from `ros2 launch`) only sets a flag: a
+    # KeyboardInterrupt raised while rclpy's C++ code converts a message surfaces as a RuntimeError traceback instead
+    # (and exit code 1). The loop below sees the flag within 50 ms.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = BaseTeleop()
+    interrupted = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: interrupted.set())
     try:
-        rclpy.spin(node)
+        while rclpy.ok() and not interrupted.is_set():
+            rclpy.spin_once(node, timeout_sec=0.05)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

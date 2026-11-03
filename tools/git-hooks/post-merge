@@ -1,0 +1,4 @@
+#!/bin/sh
+# Git hook (installed by tools/install_hooks.sh): after `git pull` or `git merge`, rebuild ros2_ws and show what this
+# branch needs.
+exec "$(git rev-parse --show-toplevel)/tools/git-hooks/after-update.sh"
