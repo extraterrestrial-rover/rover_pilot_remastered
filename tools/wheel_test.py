@@ -3,37 +3,40 @@
 
 Spins each wheel forward on its own, then all forward, then a right turn, printing what the ESP32 reports. Use it after
 flashing to check that FL/FR/RL/RR are the wheels you think they are and that "forward" really is forward.
-Needs only pyserial (pip install pyserial). Stop the drive node first: only one program may use the port.
+Needs only the Python standard library. Stop the drive node first: only one program may use the PC's UDP port.
 
-    python3 tools/wheel_test.py                             # /dev/rover-drive, 30 % of full speed
-    python3 tools/wheel_test.py /dev/ttyUSB0 --percent 50
+    python3 tools/wheel_test.py                             # the ESP32 at 192.168.77.2, 30 % of full speed
+    python3 tools/wheel_test.py --percent 50 --interface enx001122334455
 """
 import argparse
 import sys
 import time
 from pathlib import Path
 
-import serial
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ros2_ws' / 'src' / 'rover_pilot_remastered'))
 from rover_pilot_remastered import protocol  # noqa: E402
+from rover_pilot_remastered.udp_link import UdpLink  # noqa: E402
 
 ZERO = (0.0, 0.0, 0.0, 0.0)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('port', nargs='?', default='/dev/rover-drive', help='the ESP32 (default: the udev name)')
-    parser.add_argument('--baud', type=int, default=115200)
+    parser.add_argument('--master', default='192.168.77.2', help="the ESP32's address (default: LINK.md's)")
+    parser.add_argument('--port', type=int, default=47700, help="the ESP32's UDP port")
+    parser.add_argument('--local-port', type=int, default=47701, help="this PC's UDP port (the ESP32 sends status to it)")
+    parser.add_argument('--interface', default='', help='the PC port the ESP32 is plugged into: send only through it (Linux)')
     parser.add_argument('--percent', type=float, default=30.0, help='speed as a percentage of full PWM')
     parser.add_argument('--seconds', type=float, default=2.0, help='duration of each step')
     args = parser.parse_args()
 
-    port = serial.Serial()
-    port.port, port.baudrate, port.timeout = args.port, args.baud, 0
-    port.dtr = port.rts = False
-    port.open()
-    decoder, seq = protocol.PacketDecoder(), 0
+    link = UdpLink(args.master, args.port, args.local_port, args.interface)
+    try:
+        link.open()
+    except OSError as error:
+        print(f'cannot open UDP port {args.local_port}: {error} (stop drive_node or the CAN bridge first: only one may use it)')
+        return 1
+    seq = 0
     status = None
 
     def run(label: str, estop: bool, targets: tuple, seconds: float, until=None) -> bool:
@@ -43,9 +46,9 @@ def main() -> int:
         # First report 0.3 s in, so it shows this step's effect rather than the previous step's (status is 10 Hz).
         end, next_print = time.monotonic() + seconds, time.monotonic() + 0.3
         while time.monotonic() < end:
-            port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(estop, targets)))
+            link.send(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(estop, targets)))
             seq = (seq + 1) & 0xFF
-            for packet in decoder.feed(port.read(port.in_waiting or 0)):
+            for packet in link.receive():
                 if packet.type == protocol.TYPE_DRIVE_STATUS:
                     status = protocol.parse_drive_status(packet.payload) or status
             if status and time.monotonic() >= next_print:
@@ -59,11 +62,12 @@ def main() -> int:
         return until is None
 
     try:
-        # Opening the port can reset the ESP32; it ignores commands while it boots, and any non-neutral command before
-        # it has seen neutral leaves it waiting. So send neutral until it is actually ready to drive.
+        # Any non-neutral command before the ESP32 has seen neutral leaves it waiting, and its Ethernet link may still be
+        # coming up after a reset (1-3 s). So send neutral until it is actually ready to drive.
         if not run('neutral until the ESP32 is ready', False, ZERO, 5.0, until=lambda s: s.state_name == 'DRIVING'):
-            print('\nThe ESP32 did not reach DRIVING within 5 s: wrong port or baud, the new firmware is not flashed, '
-                  'or another program has the port.')
+            print(f'\nThe ESP32 did not reach DRIVING within 5 s: no answer from {args.master}:{args.port}. Check the '
+                  'Ethernet cable and link LEDs, that this PC port has 192.168.77.1/24 (LINK.md), `ping 192.168.77.2`, '
+                  'and that the ESP32 runs the Ethernet firmware (fw 3.x).')
             return 1
         rpm = status.max_wheel_rpm * max(0.0, min(100.0, args.percent)) / 100.0  # the firmware's own calibration
         steps = []
@@ -80,9 +84,9 @@ def main() -> int:
         pass
     finally:
         for _ in range(3):
-            port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(True, ZERO)))
+            link.send(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(True, ZERO)))
             seq = (seq + 1) & 0xFF
-        port.close()
+        link.close()
     print('\nDone. If a wheel was wrong, fix firmware/include/config.h (pins / forward_level); if only turning was '
           'mirrored, set swap_sides or swap the left/right pin entries.')
     return 0

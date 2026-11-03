@@ -6,7 +6,7 @@ package_name = 'rover_pilot_remastered'
 
 setup(
     name=package_name,
-    version='2.0.2',
+    version='3.0.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='bruce',
     maintainer_email='diveshkumar_23ee078@dtu.ac.in',
-    description='Rover drive control: PS5 teleop with a latched e-stop, /cmd_vel to the drive ESP32.',
+    description='Rover drive control: PS5 teleop with a latched e-stop, /cmd_vel to the drive ESP32 over Ethernet (UDP).',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [

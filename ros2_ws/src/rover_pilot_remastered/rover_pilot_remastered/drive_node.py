@@ -1,16 +1,16 @@
 """Rover-side drive node: /cmd_vel + the base station's e-stop heartbeat -> DRIVE_COMMAND to the drive ESP32 at 50 Hz.
 
-Replaces the old rover_pilot drive_node. It owns the ESP32's serial port, never scans other ports, keeps sending
+Replaces the old rover_pilot drive_node. It talks to the ESP32 over the UDP link (udp_link.py, LINK.md), keeps sending
 commands at a fixed rate (the firmware stops the motors 300 ms after the last one), and sends the e-stop flag whenever
 the base station's e-stop is latched or its heartbeat is missing.
 """
 from __future__ import annotations
 
+import errno
 import signal
 import time
 
 import rclpy
-import serial
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Twist
 from rclpy.executors import ExternalShutdownException
@@ -21,28 +21,20 @@ from std_msgs.msg import Bool
 from rover_pilot_remastered import protocol
 from rover_pilot_remastered.drive_logic import DriveGate
 from rover_pilot_remastered.kinematics import DriveGeometry, twist_to_wheel_rpm
+from rover_pilot_remastered.udp_link import UdpLink
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
-
-
-def open_port(port: str, baud: int) -> serial.Serial:
-    handle = serial.Serial()
-    handle.port, handle.baudrate, handle.timeout, handle.write_timeout = port, baud, 0, 0.1
-    handle.dtr = handle.rts = False  # avoid pulsing the ESP32 DevKit's reset circuit when opening
-    try:
-        handle.exclusive = True  # POSIX: refuse a second opener such as a serial monitor
-    except (AttributeError, ValueError):
-        pass
-    handle.open()
-    return handle
+LOST_AFTER_S = 1.0  # no DRIVE_STATUS (10 Hz) for this long: the ESP32 counts as lost
 
 
 class DriveNode(Node):
     def __init__(self) -> None:
         super().__init__('drive_node')
         param = self.declare_parameter
-        self.port = param('port', '/dev/rover-drive').value
-        self.baud = param('baud', 115200).value
+        self.link = UdpLink(param('master_host', '192.168.77.2').value, param('master_port', 47700).value,
+                            param('local_port', 47701).value, param('interface', '').value)
+        self.target = f'{self.link.master_host}:{self.link.master_port}'
+
         rate_hz = param('rate_hz', 50.0).value
         self.gate = DriveGate(param('cmd_timeout_s', 0.3).value, param('estop_timeout_s', 0.5).value,
                               param('require_estop_heartbeat', True).value)
@@ -55,10 +47,11 @@ class DriveNode(Node):
         self.create_subscription(Bool, param('estop_topic', '/rover/estop').value, self.on_estop, LATEST_ONLY)
         self.diagnostics = self.create_publisher(DiagnosticArray, '/diagnostics', 10)
 
-        self.serial_port: serial.Serial | None = None
         self.next_open_attempt = 0.0
-        self.port_error: str | None = None
-        self.decoder = protocol.PacketDecoder()
+        self.link_error: str | None = None
+        self.started = time.monotonic()
+        self.lost_reported = False
+        self.warned_silent = False
         self.seq = 0
         self.status: protocol.DriveStatus | None = None
         self.status_time: float | None = None
@@ -69,8 +62,10 @@ class DriveNode(Node):
 
         self.create_timer(1.0 / rate_hz, self.tick)
         self.create_timer(1.0, self.publish_diagnostics)
+        via = f', only through {self.link.interface}' if self.link.interface else ''
         self.get_logger().info(
-            f'drive node: port {self.port} @ {self.baud}, wheel {self.geometry.wheel_diameter_m} m, track '
+            f'drive node: ESP32 at {self.target} over UDP (listening on {self.link.local_port}{via}), '
+            f'wheel {self.geometry.wheel_diameter_m} m, track '
             f'{self.geometry.track_width_m} m, max {self.geometry.max_linear_speed:.2f} m/s '
             f'({self.geometry.max_wheel_rpm} wheel rpm at full PWM)')
 
@@ -94,55 +89,53 @@ class DriveNode(Node):
             targets = (targets[1], targets[0], targets[3], targets[2])
         self.send(protocol.drive_command_payload(decision.estop, targets))
         self.receive()
+        self.watch_link(now)
 
-    def ensure_port(self) -> bool:
-        if self.serial_port is not None:
+    def ensure_link(self) -> bool:
+        if self.link.is_open:
             return True
         now = time.monotonic()
         if now < self.next_open_attempt:
             return False
         self.next_open_attempt = now + 1.0
         try:
-            self.serial_port = open_port(self.port, self.baud)
-        except (serial.SerialException, OSError) as error:
-            if str(error) != self.port_error:
-                self.get_logger().error(f'cannot open {self.port}: {error} (retrying every second)')
-                self.port_error = str(error)
+            self.link.open()
+        except OSError as error:
+            text = (f'UDP port {self.link.local_port} is in use: the CAN bridge or another drive_node has it, and only one '
+                    'program may drive') if error.errno == errno.EADDRINUSE else f'cannot open the UDP link: {error}'
+            if text != self.link_error:
+                self.get_logger().error(f'{text} (retrying every second)')
+                self.link_error = text
             return False
-        self.port_error = None
-        self.decoder = protocol.PacketDecoder()
-        self.get_logger().info(f'serial port {self.port} open')
+        self.link_error = None
+        self.get_logger().info(f'UDP link open: sending to {self.target}, receiving on port {self.link.address[1]}')
         return True
 
-    def drop_port(self, error: Exception) -> None:
-        self.get_logger().error(f'serial port {self.port} lost: {error}')
-        try:
-            if self.serial_port is not None:
-                self.serial_port.close()
-        except (serial.SerialException, OSError):
-            pass
-        self.serial_port = None
-        self.status = None
-
     def send(self, payload: bytes) -> None:
-        if not self.ensure_port():
+        if not self.ensure_link():
             return
-        try:
-            self.serial_port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, self.seq, payload))
+        if self.link.send(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, self.seq, payload)):
             self.seq = (self.seq + 1) & 0xFF
             self.sent += 1
-        except (serial.SerialException, OSError) as error:
-            self.drop_port(error)
+
+    def watch_link(self, now: float) -> None:
+        """Log when the ESP32 goes silent and when it is back; name the usual causes if it was never heard."""
+        if self.status_time is not None:
+            silent = now - self.status_time > LOST_AFTER_S
+            if silent and not self.lost_reported:
+                cable = ' (the PC port has no carrier: Ethernet cable out?)' if self.link.carrier() is False else ''
+                self.get_logger().error(f'ESP32 lost: no DRIVE_STATUS from {self.target} for {LOST_AFTER_S:.0f} s{cable}')
+                self.lost_reported = True
+            elif not silent and self.lost_reported:
+                self.get_logger().info('ESP32 back')
+                self.lost_reported = False
+        elif not self.warned_silent and now - self.started > 5.0 and self.link.is_open:
+            self.get_logger().warn(f'nothing heard from the ESP32 at {self.target} yet: check the Ethernet cable, that the PC '
+                                   'port has 192.168.77.1/24 (LINK.md), and that the ESP32 runs the Ethernet firmware (fw 3.x)')
+            self.warned_silent = True
 
     def receive(self) -> None:
-        if self.serial_port is None:
-            return
-        try:
-            chunk = self.serial_port.read(self.serial_port.in_waiting or 0)
-        except (serial.SerialException, OSError, TypeError) as error:
-            self.drop_port(error)
-            return
-        for packet in self.decoder.feed(chunk):
+        for packet in self.link.receive():
             status = protocol.parse_drive_status(packet.payload) if packet.type == protocol.TYPE_DRIVE_STATUS else None
             if status is None:
                 continue
@@ -158,16 +151,23 @@ class DriveNode(Node):
     def publish_diagnostics(self) -> None:
         now = time.monotonic()
         status, decision = self.status, self.gate.decide(now)
-        entry = DiagnosticStatus(name='rover drive', hardware_id=self.port)
-        if self.serial_port is None:
-            entry.level, entry.message = DiagnosticStatus.ERROR, f'serial port not open: {self.port_error or "opening"}'
+        entry = DiagnosticStatus(name='rover drive', hardware_id=self.target)
+        if not self.link.is_open:
+            entry.level, entry.message = DiagnosticStatus.ERROR, f'UDP link not open: {self.link_error or "opening"}'
         elif status is None or self.status_time is None or now - self.status_time > 0.5:
-            entry.level, entry.message = DiagnosticStatus.ERROR, 'no status from the ESP32'
+            cable = ' (Ethernet cable out?)' if self.link.carrier() is False else ''
+            entry.level, entry.message = DiagnosticStatus.ERROR, f'no status from the ESP32{cable}'
         elif status.state_name == 'DRIVING' and not decision.reason:
             entry.level, entry.message = DiagnosticStatus.OK, 'driving'
         else:
             entry.level, entry.message = DiagnosticStatus.WARN, decision.reason or status.state_name.lower()
-        values = {'gate': decision.reason or 'driving', 'commands_sent': self.sent}
+        values = {'gate': decision.reason or 'driving', 'commands_sent': self.sent, 'link': f'udp {self.target}',
+                  'link_rx_good': self.link.decoder.good, 'link_rx_bad': self.link.bad,
+                  'link_from_others': self.link.foreign, 'link_send_errors': self.link.send_errors}
+        if self.link.interface:
+            carrier = self.link.carrier()
+            values['interface'] = (f'{self.link.interface}: ' + ('up' if carrier else 'no carrier') +
+                                   ('' if self.link.pinned else f', NOT pinned ({self.link.pin_error or "missing"})'))
         if status is not None:
             values.update({'esp_state': status.state_name, 'command_age_ms': status.command_age_ms,
                            'pwm_fl_fr_rl_rr': ' '.join(str(p) for p in status.pwm), 'esp_rx_good': status.rx_good,
@@ -183,8 +183,7 @@ class DriveNode(Node):
         for _ in range(3):
             self.send(protocol.drive_command_payload(True, (0.0, 0.0, 0.0, 0.0)))
             time.sleep(0.01)
-        if self.serial_port is not None:
-            self.serial_port.close()
+        self.link.close()
 
 
 def main(args: list[str] | None = None) -> None:

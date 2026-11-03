@@ -1,17 +1,21 @@
 // Rover drive firmware: one ESP32 driving four wheel motors from DRIVE_COMMAND packets sent by the onboard PC.
+// Ethernet edition (branch ethernet-udp): the packets arrive in UDP datagrams through a W5500 (src/net_link, LINK.md).
 //
 // Safety behaviour (implemented and unit-tested in lib/drive_core):
 //  - motors are off after power-up until a neutral (all-zero) command arrives;
 //  - no valid command for COMMAND_TIMEOUT_MS -> motors off, and a neutral command is needed again;
 //  - e-stop flag -> motors off and latched until commands without the flag arrive, starting with a neutral one;
-//  - garbled, partial or corrupted input is discarded (COBS + CRC framing), never interpreted as a speed.
-// Nothing but protocol packets is written to the serial line.
+//  - garbled, partial or corrupted input is discarded (COBS + CRC framing), never interpreted as a speed, and only the
+//    onboard PC's address may send commands (lib/udp_frames);
+//  - the network never blocks the loop: with the cable out, the command timeout stops the motors as for any lost link.
 #include <Arduino.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
 #include "config.h"
 #include "drive_core.h"
+#include "net_link.h"
+#include "udp_frames.h"
 #if DRIVE_PROFILE
 #include "profiler.h"  // profiling build only (pio run -e profile)
 #endif
@@ -20,8 +24,10 @@ namespace {
 
 const drive::ControllerConfig kControllerConfig = {MAX_WHEEL_RPM, COMMAND_TIMEOUT_MS, SLEW_PWM_PER_S};
 
+const uint8_t kPcIp[4] = {PC_IP_OCTETS};
+
 drive::DriveController controller(kControllerConfig);
-drive::PacketDecoder decoder;
+udp::DatagramReceiver receiver(kPcIp);
 uint8_t tx_seq = 0;
 uint32_t last_control_ms = 0;
 uint32_t last_status_ms = 0;
@@ -64,8 +70,8 @@ void send_status(uint32_t now_ms) {
   const uint32_t age = controller.command_age_ms(now_ms);
   status.command_age_ms = age > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(age);
   for (int wheel = 0; wheel < drive::kWheels; wheel++) status.pwm[wheel] = controller.pwm(wheel);
-  status.rx_good = decoder.good();
-  status.rx_bad = decoder.bad();
+  status.rx_good = receiver.good();
+  status.rx_bad = receiver.bad();
   status.uptime_ms = now_ms;
   status.reset_reason = reset_reason;
   status.max_wheel_rpm_x10 = static_cast<uint16_t>(MAX_WHEEL_RPM * 10.0f + 0.5f);
@@ -77,7 +83,7 @@ void send_status(uint32_t now_ms) {
   drive::encode_status(status, payload);
   uint8_t wire[drive::kMaxWire];
   const size_t length = drive::encode_packet(drive::kTypeDriveStatus, tx_seq++, payload, sizeof(payload), wire);
-  if (Serial.availableForWrite() >= static_cast<int>(length)) Serial.write(wire, length);  // never block the control loop
+  net::send(wire, length);  // one packet per datagram; never blocks the control loop
 }
 
 #if DRIVE_PROFILE
@@ -86,7 +92,7 @@ void send_profile() {
   const size_t payload_length = profiler::build_report(payload);
   uint8_t wire[drive::kMaxWire];
   const size_t length = drive::encode_packet(profiler::kTypeProfile, tx_seq++, payload, payload_length, wire);
-  if (Serial.availableForWrite() >= static_cast<int>(length)) Serial.write(wire, length);
+  net::send(wire, length);
 }
 #endif
 
@@ -97,7 +103,8 @@ void setup() {
   for (const MotorPins& motor : kMiddleMotors) setup_motor(motor);
   pinMode(STATUS_LED_PIN, OUTPUT);
   reset_reason = static_cast<uint8_t>(esp_reset_reason());
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(SERIAL_BAUD);  // bring-up text only
+  net::begin();  // the Ethernet link comes up 1-3 s later; the motors stay off until a neutral command anyway
   enableLoopWDT();  // a hung loop resets the ESP32, which boots with motors off
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   // Arduino's task watchdog fires after 5 s: a hung loop would keep the last PWM that long, because the 300 ms command
@@ -115,17 +122,22 @@ void loop() {
 #if DRIVE_PROFILE
   profiler::loop_begin();
 #endif
-  drive::Packet packet;
   drive::DriveCommand command;
   // One timestamp per pass. Stamping commands with a later millis() than the control update below made a command
   // look 1 ms in the future, which the timeout check read as ~49 days old: a spurious stop while driving.
   const uint32_t now_ms = millis();
 
-  while (Serial.available() > 0) {
-    if (decoder.feed(static_cast<uint8_t>(Serial.read()), packet) && drive::parse_drive_command(packet, command)) {
+  net::service(now_ms);
+  uint8_t datagram[udp::kMaxDatagram];
+  uint8_t source_ip[4];
+  for (int i = 0; i < 8; i++) {  // a few per pass: the PC sends one every 20 ms
+    const size_t length = net::receive(datagram, sizeof(datagram), source_ip);
+    if (length == 0) break;
+    receiver.feed(source_ip, datagram, length, [&](const drive::Packet& packet) {
+      if (!drive::parse_drive_command(packet, command)) return;
       controller.on_command(command, now_ms);
       if (!controller.motors_enabled()) apply_outputs();  // stops take effect immediately
-    }
+    });
   }
 
   if (now_ms - last_control_ms >= CONTROL_PERIOD_MS) {

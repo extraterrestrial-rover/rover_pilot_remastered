@@ -6,11 +6,11 @@
     python3 tools/profile.py --load idle                            #    neutral commands only, for comparison
     cd firmware && pio run -e esp32doit-devkit-v1 -t upload        # 3. flash the normal firmware back (fw 2.0.2)
 
-Stop drive_node first: only one program may use the port. Needs only pyserial.
+Stop drive_node first: only one program may use the PC's UDP port. Needs only the Python standard library.
 
 The "worst" load sends what drive_node sends (DRIVE_COMMAND at 50 Hz) but with wheel targets that change on every
 command, so the ramp works on all four wheels on every control tick; plus a burst of 3 back-to-back commands every 2 s
-(USB delivering queued packets) and a few garbage bytes every 5 s (the decoder's error path). The ESP32 keeps sending
+(queued packets arriving together) and a few garbage bytes every 5 s (the decoder's error path). The ESP32 keeps sending
 its status at 10 Hz. CPU load comes from FreeRTOS's idle-task run time per 100 ms window (firmware/src/profiler.cpp),
 so it counts everything the chip does, not just the drive code. The profiler's own time is reported separately: the
 normal firmware does not have it, so it uses a little less than measured.
@@ -22,10 +22,9 @@ import sys
 import time
 from pathlib import Path
 
-import serial
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ros2_ws' / 'src' / 'rover_pilot_remastered'))
 from rover_pilot_remastered import protocol  # noqa: E402
+from rover_pilot_remastered.udp_link import UdpLink  # noqa: E402
 
 TYPE_PROFILE = 0x05  # firmware/src/profiler.h kTypeProfile
 _PROFILE = struct.Struct('<B8HIIHHIIIHHI')  # layout in firmware/src/profiler.cpp build_report()
@@ -46,29 +45,33 @@ def parse_profile(payload: bytes) -> dict | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('port', nargs='?', default='/dev/rover-drive', help='the ESP32 (default: the udev name)')
-    parser.add_argument('--baud', type=int, default=115200)
+    parser.add_argument('--master', default='192.168.77.2', help="the ESP32's address (default: LINK.md's)")
+    parser.add_argument('--port', type=int, default=47700, help="the ESP32's UDP port")
+    parser.add_argument('--local-port', type=int, default=47701, help="this PC's UDP port (the ESP32 sends status to it)")
+    parser.add_argument('--interface', default='', help='the PC port the ESP32 is plugged into: send only through it (Linux)')
     parser.add_argument('--seconds', type=float, default=120.0, help='length of the measurement')
     parser.add_argument('--load', choices=('worst', 'idle'), default='worst', help='worst: changing targets, bursts, '
                         'garbage bytes; idle: neutral commands only')
     parser.add_argument('--percent', type=float, default=30.0, help='wheel speed swing for --load worst, %% of full speed')
     args = parser.parse_args()
 
-    port = serial.Serial()
-    port.port, port.baudrate, port.timeout = args.port, args.baud, 0
-    port.dtr = port.rts = False  # asserting DTR/RTS resets an ESP32 DevKit
-    port.open()
-    decoder, seq = protocol.PacketDecoder(), 0
+    link = UdpLink(args.master, args.port, args.local_port, args.interface)
+    try:
+        link.open()
+    except OSError as error:
+        print(f'cannot open UDP port {args.local_port}: {error} (stop drive_node or the CAN bridge first: only one may use it)')
+        return 1
+    seq = 0
     status, reports = None, []
 
     def send(estop: bool, targets: tuple) -> None:
         nonlocal seq
-        port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(estop, targets)))
+        link.send(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(estop, targets)))
         seq = (seq + 1) & 0xFF
 
     def receive(show: bool) -> None:
         nonlocal status
-        for packet in decoder.feed(port.read(port.in_waiting or 0)):
+        for packet in link.receive():
             if packet.type == protocol.TYPE_DRIVE_STATUS:
                 status = protocol.parse_drive_status(packet.payload) or status
             elif packet.type == TYPE_PROFILE and (report := parse_profile(packet.payload)) is not None:
@@ -85,7 +88,7 @@ def main() -> int:
               f"{'' if status is None else f'  {status.state_name}, bad packets {status.rx_bad}'}", flush=True)
 
     try:
-        # Opening the port can reset the ESP32: send neutral until it drives (as wheel_test does).
+        # Send neutral until it drives (as wheel_test does): its Ethernet link may still be coming up after a reset.
         deadline = time.monotonic() + 6.0
         while time.monotonic() < deadline and not (status and status.state_name == 'DRIVING' and reports):
             send(False, ZERO)
@@ -93,7 +96,7 @@ def main() -> int:
             time.sleep(0.02)
         if not reports:
             print('No PROFILE reports: this is not the profiling firmware (cd firmware && pio run -e profile -t upload), '
-                  'or the port, baud or another program holding the port is wrong.')
+                  f'or nothing answers at {args.master}:{args.port} (cable, the PC port\'s address: LINK.md).')
             return 1
         if not (status and status.state_name == 'DRIVING'):
             print(f'The ESP32 did not reach DRIVING (state {status.state_name if status else "unknown"}).')
@@ -117,7 +120,7 @@ def main() -> int:
                             send(False, tuple(rpm * math.sin(2 * math.pi * 0.5 * t + phase) for phase in (0, 1.6, 3.1, 4.7)))
                     if now >= next_garbage:
                         next_garbage += 5.0
-                        port.write(b'\x55' * 20 + b'\x00')
+                        link.send(b'\x55' * 20 + b'\x00')
                 else:
                     send(False, ZERO)
             receive(show=True)
@@ -127,7 +130,7 @@ def main() -> int:
     finally:
         for _ in range(3):
             send(True, ZERO)
-        port.close()
+        link.close()
 
     reports = reports[1:]  # the first one's second can begin before the load did
     if not reports:

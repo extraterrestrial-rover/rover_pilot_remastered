@@ -1,4 +1,4 @@
-"""Joystick -> base_teleop -> /cmd_vel + /rover/estop -> drive_node -> serial -> simulated ESP32, through real ROS 2.
+"""Joystick -> base_teleop -> /cmd_vel + /rover/estop -> drive_node -> UDP -> simulated ESP32, through real ROS 2.
 
 drive_node and base_teleop run as separate processes, as on the rover and the base station; this test publishes
 /joy and watches the simulated ESP32. Needs a sourced ROS 2 environment (skipped otherwise):
@@ -6,6 +6,7 @@ drive_node and base_teleop run as separate processes, as on the rover and the ba
 """
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -18,7 +19,6 @@ from sensor_msgs.msg import Joy  # noqa: E402
 
 from rover_pilot_remastered import fake_esp  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not hasattr(os, 'openpty'), reason='needs POSIX pseudo-terminals')
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CIRCLE, OPTIONS = 1, 6
 STOPPED = (0, 0, 0, 0)
@@ -30,9 +30,18 @@ def start(module: str, *ros_args: str) -> subprocess.Popen:
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
+def simulated_esp():
+    """A simulated ESP32 on a free loopback port, and the drive_node parameters that reach it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(('127.0.0.1', 0))
+        pc_port = probe.getsockname()[1]  # for drive_node; free a moment ago
+    fake, (host, port) = fake_esp.start_in_background(pc=('127.0.0.1', pc_port))
+    return fake, ['-p', f'master_host:={host}', '-p', f'master_port:={port}', '-p', f'local_port:={pc_port}']
+
+
 def test_joystick_to_wheels_through_ros():
-    fake, path = fake_esp.start_in_background()
-    processes = [start('drive_node', '-p', f'port:={path}'), start('base_teleop')]
+    fake, link = simulated_esp()
+    processes = [start('drive_node', *link), start('base_teleop')]
     rclpy.init()
     node = rclpy.create_node('fake_joystick')
     publisher = node.create_publisher(Joy, '/joy', 1)
@@ -96,8 +105,8 @@ def test_joystick_to_wheels_through_ros():
 
 def test_stopping_the_base_station_latches_the_estop_at_once():
     """Ctrl-C on base_teleop sends a final e-stop, so the rover stops well before the 0.5 s heartbeat timeout."""
-    fake, path = fake_esp.start_in_background()
-    drive, teleop = start('drive_node', '-p', f'port:={path}'), start('base_teleop')
+    fake, link = simulated_esp()
+    drive, teleop = start('drive_node', *link), start('base_teleop')
     rclpy.init()
     node = rclpy.create_node('fake_joystick_shutdown')
     publisher = node.create_publisher(Joy, '/joy', 1)
@@ -150,8 +159,8 @@ def test_stopping_the_base_station_latches_the_estop_at_once():
 def test_the_double_sigint_from_ros2_launch_still_shuts_down_cleanly():
     """Ctrl-C on `ros2 launch` reaches each node twice (the terminal's SIGINT to the process group, then the one launch
     forwards). The second used to interrupt the final e-stop and end the node with a KeyboardInterrupt traceback."""
-    fake, path = fake_esp.start_in_background()
-    drive, teleop = start('drive_node', '-p', f'port:={path}'), start('base_teleop')
+    fake, link = simulated_esp()
+    drive, teleop = start('drive_node', *link), start('base_teleop')
     try:
         started = time.monotonic()
         while fake.decoder.good < 20 and time.monotonic() - started < 15.0:  # the drive node is sending commands

@@ -1,28 +1,27 @@
 """Simulated drive ESP32 for bench tests without hardware.
 
-It speaks the real serial protocol on a pseudo-terminal and mirrors the firmware's safety state machine
-(firmware/lib/drive_core): neutral command required after boot / timeout / e-stop, 300 ms command timeout,
-open-loop rpm -> PWM, DRIVE_STATUS at 10 Hz.
+It speaks the real protocol over UDP, like the Ethernet firmware (LINK.md), and mirrors the firmware's safety state
+machine (firmware/lib/drive_core): neutral command required after boot / timeout / e-stop, 300 ms command timeout,
+open-loop rpm -> PWM, DRIVE_STATUS at 10 Hz. It accepts datagrams only from the PC's address, as the firmware does.
 
-    ros2 run rover_pilot_remastered fake_esp --link /tmp/rover-drive
-    ros2 launch rover_pilot_remastered rover.launch.py port:=/tmp/rover-drive
+    ros2 run rover_pilot_remastered fake_esp                        # 127.0.0.1:47700, status to 127.0.0.1:47701
+    ros2 launch rover_pilot_remastered rover.launch.py master:=127.0.0.1
 
 Simulator wraps it for tests and tools/rehearsal.py: the same calls on every branch, whatever the link is (LINK.md).
 """
 from __future__ import annotations
 
 import argparse
-import os
 import select
+import socket
 import sys
 import threading
 import time
-from pathlib import Path
 
 from rover_pilot_remastered import protocol
 
 BOOT, NO_COMMAND, ESTOP, WAIT_NEUTRAL, DRIVING = 0, 1, 2, 3, 4
-FIRMWARE_VERSION = (2, 0, 2)  # firmware/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
+FIRMWARE_VERSION = (3, 0, 0)  # firmware/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
 
 
 class FakeController:
@@ -60,12 +59,14 @@ class FakeController:
 
 
 class FakeEsp:
-    """Runs a FakeController against a file descriptor (the master side of a pseudo-terminal)."""
+    """Runs a FakeController on a UDP socket: commands from `pc` only, DRIVE_STATUS to `pc` at 10 Hz."""
 
-    def __init__(self, fd: int, max_wheel_rpm: float = 94.7, verbose: bool = False) -> None:
-        self.fd = fd
+    def __init__(self, sock: socket.socket, pc: tuple[str, int], max_wheel_rpm: float = 94.7, verbose: bool = False) -> None:
+        self.sock, self.pc = sock, pc
         self.controller = FakeController(max_wheel_rpm)
         self.decoder = protocol.PacketDecoder()
+        self.foreign = self.tails = 0
+        self.connected = True  # False: the Ethernet cable is out (the ESP32 keeps running on its USB power)
         self.verbose = verbose
         self.stop_event = threading.Event()
         self.started = time.monotonic()
@@ -79,17 +80,9 @@ class FakeEsp:
         next_status = 0.0
         last_report = None
         while not self.stop_event.is_set():
-            ready, _, _ = select.select([self.fd], [], [], 0.005)
+            ready, _, _ = select.select([self.sock], [], [], 0.005)
             if ready:
-                try:
-                    chunk = os.read(self.fd, 4096)
-                except OSError:
-                    chunk = b''
-                for packet in self.decoder.feed(chunk):
-                    command = protocol.parse_drive_command(packet.payload) if packet.type == protocol.TYPE_DRIVE_COMMAND else None
-                    if command is not None:
-                        with self.lock:
-                            self.controller.on_command(command[0], command[1], self.now_ms())
+                self._receive()
             with self.lock:
                 self.controller.update(self.now_ms())
                 pwm = self.controller.pwm()
@@ -103,118 +96,139 @@ class FakeEsp:
                 print(f'{protocol.STATE_NAMES[state]:<12} PWM FL {pwm[0]:4} FR {pwm[1]:4} RL {pwm[2]:4} RR {pwm[3]:4}', flush=True)
                 last_report = report
 
+    def _receive(self) -> None:
+        while True:
+            try:
+                data, (host, _port) = self.sock.recvfrom(2048)
+            except (BlockingIOError, InterruptedError, OSError):
+                return
+            if not self.connected:
+                continue  # cable out: nothing arrives
+            if host != self.pc[0]:
+                self.foreign += 1
+                continue
+            end = data.rfind(b'\x00') + 1  # complete packets end at the datagram's last 0x00
+            if end < len(data):
+                self.tails += 1
+            for packet in self.decoder.feed(data[:end]):
+                command = protocol.parse_drive_command(packet.payload) if packet.type == protocol.TYPE_DRIVE_COMMAND else None
+                if command is not None:
+                    with self.lock:
+                        self.controller.on_command(command[0], command[1], self.now_ms())
+
     def _send_status(self) -> None:
+        if not self.connected:
+            return
         with self.lock:
             age = 0xFFFF if self.controller.last_command_ms is None else min(0xFFFF, self.now_ms() - self.controller.last_command_ms)
-            status = protocol.DriveStatus(self.controller.state, age, self.controller.pwm(), self.decoder.good, self.decoder.bad,
+            bad = min(0xFFFF, self.decoder.bad + self.foreign + self.tails)
+            status = protocol.DriveStatus(self.controller.state, age, self.controller.pwm(), self.decoder.good, bad,
                                           self.now_ms(), 1, self.controller.max_wheel_rpm, FIRMWARE_VERSION)
         wire = protocol.encode_packet(protocol.TYPE_DRIVE_STATUS, self.seq, protocol.drive_status_payload(status))
         self.seq = (self.seq + 1) & 0xFF
         try:
-            os.write(self.fd, wire)
+            self.sock.sendto(wire, self.pc)
         except OSError:
-            pass  # nobody has the port open yet
+            pass  # nobody listening is fine for UDP; anything else is the PC's problem, as on the real link
 
 
-def open_pty() -> tuple[int, str]:
-    """Create a raw pseudo-terminal; returns (master fd for the fake, slave path for the drive node)."""
-    import pty  # noqa: PLC0415 - POSIX only
-    import tty  # noqa: PLC0415
-
-    master_fd, slave_fd = pty.openpty()
-    tty.setraw(slave_fd)
-    os.set_blocking(master_fd, False)
-    return master_fd, os.ttyname(slave_fd)
+def open_socket(host: str = '127.0.0.1', port: int = 0) -> socket.socket:
+    """The ESP32's UDP socket; port 0 picks a free one (see getsockname())."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    sock.bind((host, port))
+    return sock
 
 
-def start_in_background(max_wheel_rpm: float = 94.7) -> tuple[FakeEsp, str]:
-    fd, path = open_pty()
-    fake = FakeEsp(fd, max_wheel_rpm)
+def start_in_background(max_wheel_rpm: float = 94.7, pc: tuple[str, int] = ('127.0.0.1', 47701),
+                        port: int = 0) -> tuple[FakeEsp, tuple[str, int]]:
+    """A FakeEsp on 127.0.0.1 (a free port unless given), sending status to `pc`; returns it and its address."""
+    sock = open_socket('127.0.0.1', port)
+    fake = FakeEsp(sock, pc, max_wheel_rpm)
     threading.Thread(target=fake.run, name='fake-esp', daemon=True).start()
-    return fake, path
+    return fake, sock.getsockname()
 
 
 class Simulator:
-    """The simulated ESP32 on this branch's link (here a pseudo-terminal at `path`), for tests and tools/rehearsal.py.
+    """The simulated ESP32 on this branch's link (here UDP on 127.0.0.1:47700, status to port 47701, the addresses of
+    LINK.md moved to the loopback), for tests and tools/rehearsal.py.
 
     The other branch has a Simulator with the same methods, so the rehearsal does not depend on the link.
     """
 
-    def __init__(self, path: str = '/tmp/rover-drive-sim') -> None:
-        self.path = path
+    def __init__(self, host: str = '127.0.0.1', port: int = 47700, pc: tuple[str, int] = ('127.0.0.1', 47701)) -> None:
+        self.host, self.port, self.pc = host, port, pc
         self.fake: FakeEsp | None = None
-        self._plug()
+        self._start()
 
     @property
     def launch_arguments(self) -> list[str]:
         """What rover.launch.py needs to reach this ESP32."""
-        return [f'port:={self.path}']
+        return [f'master:={self.host}']
 
     @property
     def tool_arguments(self) -> list[str]:
         """What tools/wheel_test.py and tools/profile.py need to reach it."""
-        return [self.path]
+        return ['--master', self.host, '--port', str(self.port), '--local-port', str(self.pc[1])]
 
     def state(self) -> tuple[int, tuple[int, int, int, int]] | None:
-        """(state, PWM per wheel) as the ESP32 has it now; None while it is unplugged (over USB: off)."""
+        """(state, PWM per wheel) as the ESP32 has it now; it keeps running while the cable is out."""
         if self.fake is None:
             return None
         with self.fake.lock:
             return self.fake.controller.state, self.fake.controller.pwm()
 
     def reset(self) -> None:
-        """The EN button: the ESP32 reboots, the link stays."""
+        """The EN button: the ESP32 reboots, the cable stays."""
         if self.fake is not None:
             with self.fake.lock:
                 self.fake.controller = FakeController(self.fake.controller.max_wheel_rpm)
 
     def unplug(self) -> None:
-        """The link cable is pulled. Over USB that is also the ESP32's power, so it stops."""
+        """The Ethernet cable is pulled: nothing gets through; the ESP32 stays on (USB power) and times out."""
+        if self.fake is not None:
+            self.fake.connected = False
+
+    def plug(self) -> None:
+        """The cable is back; the ESP32 still waits for a neutral command after its timeout."""
+        if self.fake is not None:
+            self.fake.connected = True
+
+    def close(self) -> None:
         if self.fake is None:
             return
         self.fake.stop_event.set()
         self._thread.join(2)
-        os.close(self._fd)  # the drive node's port now fails, as when the cable is pulled
-        Path(self.path).unlink(missing_ok=True)
+        self.fake.sock.close()
         self.fake = None
 
-    def plug(self) -> None:
-        """The cable is back. Over USB the ESP32 boots again (motors off until a neutral command)."""
-        if self.fake is None:
-            self._plug()
-
-    def close(self) -> None:
-        self.unplug()
-
-    def _plug(self) -> None:
-        self._fd, real_path = open_pty()
-        self.fake = FakeEsp(self._fd)
+    def _start(self) -> None:
+        self.fake = FakeEsp(open_socket(self.host, self.port), self.pc)
         self._thread = threading.Thread(target=self.fake.run, name='fake-esp', daemon=True)
         self._thread.start()
-        link = Path(self.path)
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(real_path)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description='Simulated drive ESP32 on a pseudo-terminal.')
-    parser.add_argument('--link', default='/tmp/rover-drive', help='symlink to create for the pseudo-terminal')
+    parser = argparse.ArgumentParser(description='Simulated drive ESP32 on UDP.')
+    parser.add_argument('--host', default='127.0.0.1', help="the simulated ESP32's address")
+    parser.add_argument('--port', type=int, default=47700, help="the simulated ESP32's UDP port")
+    parser.add_argument('--pc-host', default='127.0.0.1', help='the only address it takes commands from, and sends status to')
+    parser.add_argument('--pc-port', type=int, default=47701)
     parser.add_argument('--max-wheel-rpm', type=float, default=94.7)
     args = parser.parse_args(argv)
-    fd, path = open_pty()
-    link = Path(args.link)
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(path)
-    print(f'fake drive ESP32 on {args.link} -> {path} (Ctrl-C to stop)', flush=True)
-    fake = FakeEsp(fd, args.max_wheel_rpm, verbose=True)
+    try:
+        sock = open_socket(args.host, args.port)
+    except OSError as error:
+        print(f'cannot bind {args.host}:{args.port}: {error}', file=sys.stderr)
+        return 1
+    print(f'fake drive ESP32 on udp {args.host}:{args.port}, status to {args.pc_host}:{args.pc_port} (Ctrl-C to stop)', flush=True)
+    fake = FakeEsp(sock, (args.pc_host, args.pc_port), args.max_wheel_rpm, verbose=True)
     try:
         fake.run()
     except KeyboardInterrupt:
         pass
     finally:
-        link.unlink(missing_ok=True)
+        sock.close()
     return 0
 
 

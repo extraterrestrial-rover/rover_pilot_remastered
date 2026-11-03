@@ -29,9 +29,10 @@ base_teleop:
 
 drive_node:
   ros__parameters:
-    # port: set with the launch argument port:= (default /dev/rover-drive, the udev symlink).
+    # master_host and interface: set with the launch arguments master:= (default 192.168.77.2) and interface:=.
     # A value here would override the launch argument, because node-specific entries take precedence.
-    baud: 115200               # MUST equal SERIAL_BAUD in firmware/include/config.h
+    master_port: 47700         # the ESP32's UDP port; MUST equal ESP_UDP_PORT in firmware/include/config.h
+    local_port: 47701          # this PC's UDP port; MUST equal PC_UDP_PORT (the CAN bridge uses it too: one at a time)
     rate_hz: 50.0
     cmd_timeout_s: 0.3         # /cmd_vel older than this -> zero targets
     estop_timeout_s: 0.5       # e-stop heartbeat older than this -> e-stop
