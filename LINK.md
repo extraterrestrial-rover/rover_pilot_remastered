@@ -59,6 +59,76 @@ installer's `--print-network-config` shows the netplan file instead.
 port 47701; the second one to start gets "port in use". That is the README's "only one of them may follow `/cmd_vel`"
 rule, now enforced by the laptop.
 
+## Raspberry Pi 4 as the onboard computer
+
+The same as the laptop, with these differences.
+
+- **OS:** Ubuntu Server 22.04 LTS, 64-bit (Raspberry Pi Imager: Other general-purpose OS → Ubuntu). ROS 2 Humble has
+  packages for it (arm64); Raspberry Pi OS has none. Install everything while the Pi has internet: it has no clock
+  battery, so off the network its date can be wrong, and apt then fails.
+- **Two Ethernet ports.** The Pi's own port (`eth0`) goes to the rover's radio, as before. The ESP32 gets a
+  USB-Ethernet adapter (one with an RTL8153 or AX88179 chip works out of the box), in a blue USB 3 port. Its name is
+  `enx` plus its MAC address: `ip -br link`.
+- **The private network.** Ubuntu Server uses netplan, not NetworkManager, so instead of the `nmcli` lines above:
+
+  ```bash
+  sudo tee /etc/netplan/60-rover-master.yaml >/dev/null <<'EOF'
+  network:
+    version: 2
+    ethernets:
+      enx001122334455:          # your adapter's name
+        dhcp4: false
+        dhcp6: false
+        addresses: [192.168.77.1/24]
+        optional: true          # boot does not wait for it while the ESP32 is off
+  EOF
+  sudo chmod 600 /etc/netplan/60-rover-master.yaml
+  sudo netplan apply
+  ip -br addr show enx001122334455     # 192.168.77.1/24 once the ESP32 is on and the link is up
+  ping -c 3 192.168.77.2
+  ```
+
+  It is the file the CAN bridge's installer writes (`install.sh --master-interface <port> --print-network-config
+  --network-backend netplan`), so the CAN master can use it later as it is.
+- **Power and the kill switch.** The Pi runs from the rover battery (a 5.1 V supply of 3 A or more, after the kill
+  switch) and the ESP32 from the Pi's USB, so the kill switch turns both off and they come back with the motors off
+  until a neutral command. The Pi's USB ports share 1.2 A: the ESP32 with the W5500 (about 0.3 A) and the adapter (about
+  0.2 A) fit. Under-voltage resets USB devices, so the ESP32 reboots and the rover stops: check with
+  `vcgencmd get_throttled` (`sudo apt install libraspberrypi-bin`); `throttled=0x0` is good.
+- **Flashing:** flash the ESP32 from your computer before it goes on the rover; PlatformIO on the Pi works too, but is
+  slow to set up.
+- **ROS 2:** `sudo apt install ros-humble-ros-base ros-humble-rmw-cyclonedds-cpp ros-humble-diagnostic-msgs
+  python3-colcon-common-extensions python3-yaml` (no `joy`: the controller is at the base station), then the README's
+  rover setup, then the next section.
+- **Its address on the rover LAN:** if the Pi takes the laptop's place, giving `eth0` the laptop's address
+  (192.168.1.68) keeps `ssh` and the dashboard's default unchanged; never both on the rover at once.
+
+## ROS 2 on the right port (CycloneDDS)
+
+With a second Ethernet port up (or Wi-Fi as well), CycloneDDS picks one port for ROS 2 traffic, and it may pick the
+ESP32's: the rover then never discovers the base station (its log warns "selected arbitrarily"). Pin it to the radio
+port on the onboard computer, laptop or Pi (the base station, with one port, needs nothing):
+
+```bash
+cat > ~/cyclonedds.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="eth0"/>   <!-- the port to the radio: check with ip -br addr -->
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>
+EOF
+echo 'export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml' >> ~/.bashrc
+```
+
+Then, in a new terminal, with `base_station.launch.py` running at the base station: `ros2 topic list` shows `/cmd_vel`
+and `/rover/estop`. CycloneDDS needs that port to have its address when a node starts, so plug the radio in before
+launching (or add `ignore-carrier: true` to the radio port's netplan entry to keep its address without a cable).
+
 ## Launch arguments
 
 | Argument | Default | Meaning |
@@ -115,6 +185,8 @@ ros2 launch rover_pilot_remastered rover.launch.py master:=127.0.0.1
 | Link LEDs dark | Cable, or the W5500 has no power |
 | Ping works, nothing heard | `local_port`/`master_port` differ from the firmware's ports, or a firewall drops UDP 47701 (`sudo ufw status`) |
 | `interface: ... NOT pinned` in `/diagnostics` | The `interface:=` name is wrong: compare with `ip -br link` |
+| A node fails at start: `eth0: does not match an available interface` | `~/cyclonedds.xml` names a port that is missing or has no address yet: the radio cable, or the name (`ip -br addr`) |
+| The rover never sees `/cmd_vel` although both machines run | CycloneDDS chose the ESP32's port: "ROS 2 on the right port" above |
 | `esp_rx_bad` rising | Datagrams from another device on that port, or corrupted packets |
 | After `git switch main`, nothing is heard over USB | The ESP32 still runs fw 3.x: flash `main`'s firmware (2.x) |
 
