@@ -124,9 +124,15 @@ def main() -> int:
             time.sleep(0.002)
     except KeyboardInterrupt:
         pass
+    except (serial.SerialException, OSError) as error:
+        print(f'\nLost the port {args.port}: {error}. The ESP32 stops its motors by itself 0.3 s after the last command.')
+        return 1
     finally:
-        for _ in range(3):
-            send(True, ZERO)
+        try:
+            for _ in range(3):
+                send(True, ZERO)
+        except (serial.SerialException, OSError):
+            pass  # the port is gone: the firmware's command timeout stops the motors
         port.close()
 
     reports = reports[1:]  # the first one's second can begin before the load did
