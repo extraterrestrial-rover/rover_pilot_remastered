@@ -110,8 +110,10 @@ def test_joystick_to_wheels_through_ros():
         fake.stop_event.set()
 
 
-def test_stopping_the_base_station_latches_the_estop_at_once():
-    """Ctrl-C on base_teleop sends a final e-stop, so the rover stops well before the 0.5 s heartbeat timeout."""
+@pytest.mark.parametrize('stop_signal', [signal.SIGINT, signal.SIGTERM, signal.SIGHUP], ids=['ctrl-c', 'kill', 'closed-terminal'])
+def test_stopping_the_base_station_latches_the_estop_at_once(stop_signal):
+    """Ctrl-C on base_teleop sends a final e-stop, so the rover stops well before the 0.5 s heartbeat timeout. So do
+    `kill` and a closed terminal or dropped ssh session."""
     fake, path = fake_esp.start_in_background()
     drive, teleop = start('drive_node', '-p', f'port:={path}'), start('base_teleop')
     rclpy.init()
@@ -141,7 +143,7 @@ def test_stopping_the_base_station_latches_the_estop_at_once():
         assert wait(lambda s: s[0] == fake_esp.ESTOP, 15.0), esp()  # discovery; the teleop starts latched
         wait(lambda s: False, 0.2, pressed=(OPTIONS,))
         assert wait(lambda s: s[0] == fake_esp.DRIVING and s[1][0] > 100, 3.0, left_y=0.5), esp()
-        teleop.send_signal(signal.SIGINT)
+        teleop.send_signal(stop_signal)
         started = time.monotonic()
         while esp()[0] != fake_esp.ESTOP and time.monotonic() - started < 2.0:
             time.sleep(0.005)
