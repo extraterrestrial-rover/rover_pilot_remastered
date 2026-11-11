@@ -22,6 +22,7 @@ from rover_pilot_remastered.kinematics import DriveGeometry
 from rover_pilot_remastered.teleop_logic import TeleopConfig, TeleopLogic
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)  # each ends the node through its final e-stop
 
 
 class BaseTeleop(Node):
@@ -93,11 +94,13 @@ def main(args: list[str] | None = None) -> None:
     # rclpy's own SIGINT handler shuts the context down before `finally` runs, so a final publish would fail. Without
     # it, the context stays usable for stop_rover(). Ctrl-C (also from `ros2 launch`) only sets a flag: a
     # KeyboardInterrupt raised while rclpy's C++ code converts a message surfaces as a RuntimeError traceback instead
-    # (and exit code 1). The loop below sees the flag within 50 ms.
+    # (and exit code 1). The loop below sees the flag within 50 ms. `kill` (SIGTERM) and a closed terminal or dropped
+    # ssh session (SIGHUP) end the node the same way; unhandled, they would skip the final e-stop.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = BaseTeleop()
     interrupted = threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: interrupted.set())
+    for stop_signal in STOP_SIGNALS:
+        signal.signal(stop_signal, lambda *_: interrupted.set())
     try:
         while rclpy.ok() and not interrupted.is_set():
             rclpy.spin_once(node, timeout_sec=0.05)
@@ -106,7 +109,8 @@ def main(args: list[str] | None = None) -> None:
     finally:
         # One Ctrl-C on `ros2 launch` delivers SIGINT twice: from the terminal, then forwarded by launch. The second
         # one must not cut the final e-stop short (or end the node with a traceback).
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for stop_signal in STOP_SIGNALS:
+            signal.signal(stop_signal, signal.SIG_IGN)
         node.stop_rover()
         node.destroy_node()
         if rclpy.ok():
