@@ -38,8 +38,9 @@ The bench tools take the port as their first argument: `python3 tools/wheel_test
 
 ## Firmware
 
-It builds on both Arduino-ESP32 core 3.x (pioarduino) and 2.x (`espressif32@6.x`); core 2.x keeps its 5 s task
-watchdog instead of the 1 s one. The serial line carries only binary packets, so a normal serial monitor shows
+`firmware/platformio.ini` pins the platform to pioarduino 55.03.311 (Arduino-ESP32 core 3.3.11), so every computer
+builds the same firmware. The code also compiles on core 2.x, but there the loop watchdog is 5 s instead of 1 s, so
+leave the pin alone. The serial line carries only binary packets, so a normal serial monitor shows
 garbage: use `tools/wheel_test.py` or the drive node's logs instead. Opening the port with DTR/RTS asserted (most
 serial monitors) resets a DevKit; the drive node and the tools open it with both de-asserted.
 
