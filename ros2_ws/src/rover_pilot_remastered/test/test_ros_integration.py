@@ -3,6 +3,9 @@
 drive_node and base_teleop run as separate processes, as on the rover and the base station; this test publishes
 /joy and watches the simulated ESP32. Needs a sourced ROS 2 environment (skipped otherwise):
     source /opt/ros/humble/setup.bash && python3 -m pytest test/test_ros_integration.py
+
+These tests release the e-stop and command full speed. conftest.py puts them in a ROS domain of their own (87, or
+ROVER_TEST_DOMAIN), and they refuse to run if any other node is in it: a real drive_node would follow them.
 """
 import os
 import signal
@@ -16,12 +19,25 @@ import pytest
 rclpy = pytest.importorskip('rclpy')
 from sensor_msgs.msg import Joy  # noqa: E402
 
-from rover_pilot_remastered import fake_esp  # noqa: E402
+from rover_pilot_remastered import fake_esp, ros_sandbox  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not hasattr(os, 'openpty'), reason='needs POSIX pseudo-terminals')
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CIRCLE, OPTIONS = 1, 6
 STOPPED = (0, 0, 0, 0)
+
+
+@pytest.fixture(scope='module', autouse=True)
+def a_domain_to_ourselves(ros_domain):
+    rclpy.init()
+    node = rclpy.create_node('sandbox_check')
+    try:
+        others = ros_sandbox.foreign_nodes(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    if others:
+        pytest.fail(ros_sandbox.refusal(ros_domain, others) + ' (ROVER_TEST_DOMAIN=<number> python3 -m pytest ...)')
 
 
 def start(module: str, *ros_args: str) -> subprocess.Popen:
@@ -172,3 +188,32 @@ def test_the_double_sigint_from_ros2_launch_still_shuts_down_cleanly():
             if process.poll() is None:
                 process.kill()
         fake.stop_event.set()
+
+
+def test_the_tests_run_where_a_rover_in_another_domain_cannot_hear_them(ros_domain):
+    """A node started by these tests is in the sandbox domain (and found by the check that guards it), and invisible
+    from any other domain, such as the one a real rover uses."""
+    teleop = start('base_teleop')
+    rclpy.init()
+    inside = rclpy.create_node('inside_the_sandbox')
+    elsewhere_context = rclpy.Context()
+    rclpy.init(context=elsewhere_context, domain_id=ros_domain + 1)
+    elsewhere = rclpy.create_node('another_domain', context=elsewhere_context)
+    try:
+        seen = []
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and '/base_teleop' not in seen:
+            seen = ros_sandbox.foreign_nodes(inside, settle_s=0.5)
+        assert '/base_teleop' in seen  # what the rehearsal and these tests refuse to start next to
+        assert ros_sandbox.foreign_nodes(elsewhere, settle_s=2.0) == []
+        assert elsewhere.get_publishers_info_by_topic('/cmd_vel') == []
+    finally:
+        teleop.send_signal(signal.SIGINT)
+        try:
+            teleop.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            teleop.kill()
+        inside.destroy_node()
+        elsewhere.destroy_node()
+        rclpy.shutdown()
+        rclpy.shutdown(context=elsewhere_context)
