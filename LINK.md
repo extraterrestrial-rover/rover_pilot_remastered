@@ -15,15 +15,19 @@ branch, `ethernet-udp`, carries the same packets over a W5500 Ethernet module in
 Give the ESP32 a stable name (once, with only the drive ESP32 plugged in):
 
 ```bash
-udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'      # copy the value into udev/99-rover-drive.rules
 sudo cp ~/rover_pilot_remastered/udev/99-rover-drive.rules /etc/udev/rules.d/
+udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'      # the ESP32's serial number, for example ATTRS{serial}=="0001"
+sudo sed -i 's/REPLACE_WITH_SERIAL/0001/' /etc/udev/rules.d/99-rover-drive.rules    # with your number
 sudo udevadm control --reload && sudo udevadm trigger && ls -l /dev/rover-drive
 sudo usermod -aG dialout $USER                          # then log out and in
 ```
 
-If the board uses a CH340 (no unique serial), use the commented `KERNELS==` line in the rule instead: it matches the
-physical USB port (`udevadm info -a -n /dev/ttyUSB0 | grep KERNELS`). Until the rule is installed, pass
-`port:=/dev/ttyUSB0` to the launch file.
+The serial number goes into the installed copy in `/etc/udev/rules.d/`, not into the file in this folder: a change
+there would show up in `git status` and get in the way of `git pull`.
+
+If the board uses a CH340 (no unique serial), edit the installed copy to use its commented `KERNELS==` line instead:
+it matches the physical USB port (`udevadm info -a -n /dev/ttyUSB0 | grep KERNELS`). Until the rule is installed,
+pass `port:=/dev/ttyUSB0` to the launch file.
 
 ## Launch arguments
 
