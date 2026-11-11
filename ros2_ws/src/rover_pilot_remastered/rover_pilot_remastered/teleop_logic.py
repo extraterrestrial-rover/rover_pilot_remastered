@@ -5,6 +5,10 @@ E-stop rules:
   - the e-stop button latches it at any time;
   - the release button clears it only while both sticks are centred (no lurch on release);
   - losing the joystick (no /joy for joy_timeout_s) latches it.
+
+AUTO mode (rover_autonomy: the rover follows Nav2 instead of the sticks):
+  - the AUTO button turns it on only while the e-stop is released and both sticks are centred;
+  - the AUTO button again, pushing either stick, the e-stop or losing the joystick turn it off at once.
 """
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ class TeleopConfig:
     slow_scale: float = 0.35
     estop_button: int = 1  # Circle
     release_button: int = 6  # Options
+    auto_button: int = -1  # toggles AUTO (Nav2 drives); -1 disables AUTO
     joy_timeout_s: float = 0.5
 
 
@@ -45,6 +50,8 @@ class TeleopLogic:
         self._buttons: list[int] = []
         self._last_joy: float | None = None
         self._release_held = False
+        self.auto = False
+        self._auto_held = False
 
     def _axis(self, index: int, invert: bool) -> float:
         if index < 0 or index >= len(self._axes):
@@ -66,6 +73,7 @@ class TeleopLogic:
             if not self.estopped:
                 events.append('E-STOP latched (button)')
             self.estopped, self.reason = True, 'e-stop button'
+            self._leave_auto(events, 'e-stop')
         release = self._button(self.config.release_button)
         if release and not self._release_held and self.estopped and not self._button(self.config.estop_button):
             if self.sticks_centred():
@@ -74,7 +82,26 @@ class TeleopLogic:
             else:
                 events.append('Release ignored: centre both sticks first')
         self._release_held = release
+        auto = self._button(self.config.auto_button)
+        if auto and not self._auto_held:
+            if self.auto:
+                self._leave_auto(events, 'AUTO button')
+            elif self.estopped:
+                events.append('AUTO refused: release the e-stop first')
+            elif not self.sticks_centred():
+                events.append('AUTO refused: centre both sticks first')
+            else:
+                self.auto = True
+                events.append('AUTO on: the rover follows Nav2 goals (stick or AUTO button: back to manual)')
+        self._auto_held = auto
+        if self.auto and not self.sticks_centred():
+            self._leave_auto(events, 'stick moved')
         return events
+
+    def _leave_auto(self, events: list[str], why: str) -> None:
+        if self.auto:
+            self.auto = False
+            events.append(f'AUTO off ({why}): manual driving')
 
     def joystick_fresh(self, now: float) -> bool:
         return self._last_joy is not None and now - self._last_joy <= self.config.joy_timeout_s
@@ -85,7 +112,8 @@ class TeleopLogic:
         if not self.joystick_fresh(now) and not self.estopped:
             events.append('E-STOP latched: joystick lost')
             self.estopped, self.reason = True, 'joystick lost'
-        if self.estopped:
+            self._leave_auto(events, 'joystick lost')
+        if self.estopped or self.auto:
             return 0.0, 0.0, events
         scale = self.config.slow_scale if self._button(self.config.slow_button) else 1.0
         linear = self._axis(self.config.axis_linear, self.config.invert_linear) * self.config.max_linear_speed * scale

@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  The rover for robot_state_publisher: base_footprint (the ground point midway between the four wheels) ->
+  base_link (at the wheel axles) -> the ZED 2i's zed_camera_link. The launch file passes the values from
+  config/autonomy.yaml and the wheel profile; the ZED wrapper publishes the camera's own frames below
+  zed_camera_link (publish_urdf, its default).
+-->
+<robot name="rover" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="wheel_radius" default="0.14"/>
+  <xacro:arg name="length" default="1.0"/>
+  <xacro:arg name="width" default="1.0"/>
+  <xacro:arg name="zed_name" default="zed"/>
+  <xacro:arg name="zed_x" default="0.4"/>
+  <xacro:arg name="zed_y" default="0.0"/>
+  <xacro:arg name="zed_z" default="0.6"/>
+  <xacro:arg name="zed_pitch" default="0.0"/>
+
+  <xacro:property name="r" value="$(arg wheel_radius)"/>
+  <xacro:property name="body_height" value="0.2"/>
+
+  <link name="base_footprint"/>
+
+  <link name="base_link">
+    <visual>
+      <geometry><box size="$(arg length) $(arg width) ${body_height}"/></geometry>
+      <material name="rover_grey"><color rgba="0.55 0.57 0.6 0.8"/></material>
+    </visual>
+  </link>
+  <joint name="base_link_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${r}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="$(arg zed_name)_camera_link">
+    <visual>
+      <origin xyz="0 0 0.015" rpy="0 0 0"/>
+      <geometry><box size="0.03 0.175 0.03"/></geometry>
+      <material name="zed_black"><color rgba="0.1 0.1 0.1 1"/></material>
+    </visual>
+  </link>
+  <joint name="zed_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="$(arg zed_name)_camera_link"/>
+    <origin xyz="$(arg zed_x) $(arg zed_y) ${$(arg zed_z) - r}" rpy="0 $(arg zed_pitch) 0"/>
+  </joint>
+</robot>

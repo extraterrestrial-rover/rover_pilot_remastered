@@ -23,6 +23,7 @@ base_teleop:
     slow_scale: 0.35
     estop_button: 3            # Circle: latch the e-stop
     release_button: 1          # Options: release the e-stop (both sticks centred)
+    auto_button: 2             # Triangle: AUTO on/off (rover_autonomy). CHECK with `ros2 topic echo /joy`; -1 disables
     joy_timeout_s: 0.5         # joystick silent this long = e-stop
     publish_rate_hz: 20.0
     estop_rate_hz: 10.0

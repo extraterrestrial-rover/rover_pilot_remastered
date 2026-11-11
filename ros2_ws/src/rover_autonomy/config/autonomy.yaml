@@ -1,0 +1,51 @@
+# Autonomy on the rover laptop (rover_autonomy.launch.py; AUTONOMY.md). Use decimal points for every number.
+# The launch file builds Nav2's parameters, the URDF, the EKF's and RTAB-Map's from the /** section; the rover's
+# size and the drive geometry come from rover_pilot_remastered's config/drive.yaml and config/wheels/*.yaml.
+/**:
+  ros__parameters:
+    auto_max_speed: 0.5          # m/s: AUTO's top speed (for one run: launch argument max_speed:=0.3)
+    auto_max_turn_rate: 0.8      # rad/s: AUTO's top turning rate
+
+    # The rover's outline for the costmaps, centred on base_footprint: the ground point midway between the four
+    # wheels. MEASURE: these are placeholders.
+    rover_length_m: 1.0          # outer length, front to back, including the wheels
+    rover_width_m: 1.0           # outer width, over the wheels
+    rover_height_m: 0.8          # highest point (the camera mast); taller obstacles are ignored above this
+    inflation_radius_m: 0.7      # Nav2 keeps the rover's centre this far from obstacles where it can
+    min_obstacle_height_m: 0.1   # depth points lower than this are ground, not obstacles (rough terrain: raise it)
+    obstacle_range_m: 3.0        # the ZED's depth is used up to this distance for the costmaps
+
+    # The ZED 2i's mount: zed_camera_link (the middle of the camera's underside, at the tripod screw) relative to
+    # base_footprint. MEASURE: these are placeholders.
+    zed_x_m: 0.4                 # forward of the rover's centre
+    zed_y_m: 0.0                 # left of the centre line
+    zed_z_m: 0.6                 # above the ground
+    zed_pitch_rad: 0.0           # tilted down: positive (0.17 = 10 degrees)
+
+    # The ZED wrapper's topics (camera_name zed). CHECK with `ros2 topic list | grep zed_node` (names differ between
+    # wrapper versions; 4.x uses rgb/image_rect_color and rgb/camera_info).
+    zed_camera_name: zed
+    zed_odom_topic: /zed/zed_node/odom
+    zed_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+    zed_rgb_topic: /zed/zed_node/rgb/color/rect/image
+    zed_rgb_info_topic: /zed/zed_node/rgb/color/rect/camera_info
+    zed_depth_topic: /zed/zed_node/depth/depth_registered
+
+    map_database: ~/.ros/rover_map.db  # RTAB-Map's map. A fresh run keeps the previous one as rover_map-<time>.db
+
+drive_mux:
+  ros__parameters:
+    rate_hz: 50.0
+    mode_timeout_s: 0.5          # /rover/auto older than this: the base station is lost, nothing is passed on
+    command_timeout_s: 0.3       # an input older than this is not passed on (drive_node's own timeout)
+    neutral_hold_s: 0.3          # zeros first whenever AUTO starts (the ESP32 re-arms only on a neutral command)
+    # The motors' deadband as a wheel target in rpm: `wheel_test.py --percent P` drives P x max_wheel_rpm / 100.
+    # MEASURE on the ground (AUTONOMY.md, "Deadband"): placeholders. 0.0 turns the correction off.
+    min_wheel_rpm_straight: 20.0 # the target where the rover just starts to roll straight ahead
+    min_wheel_rpm_spin: 60.0     # the target where it just starts to turn in place (skid steer needs much more)
+    stop_below_rpm: 0.5          # slower commands are noise: a stop
+
+goal_manager:
+  ros__parameters:
+    link_timeout_s: 0.5          # /rover/auto or /rover/estop older than this: the base station is lost
+    rate_hz: 10.0

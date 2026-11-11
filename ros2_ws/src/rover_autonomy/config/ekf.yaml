@@ -1,0 +1,24 @@
+# robot_localization: the ZED's visual-inertial odometry -> odom -> base_footprint (2D), and /odometry/filtered for
+# Nav2. RTAB-Map publishes map -> odom; the ZED wrapper is started with publish_tf:=false and publish_map_tf:=false,
+# so each transform has one publisher.
+ekf_local:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # The ZED's odometry carries a pose only (its twist is all zeros), so fuse x, y and yaw. It is the camera's pose;
+    # zed_odometry moves it to base_footprint first (Humble's robot_localization would take it as the rover's centre).
+    odom0: /zed/odom_base
+    odom0_config: [true,  true,  false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_differential: false
+    odom0_queue_size: 10

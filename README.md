@@ -9,7 +9,8 @@ PS5 ─▶ joy/joy_node ─/joy─▶ base_teleop ─┬─ /cmd_vel (20 Hz) ─
                                                                                              ◀── DRIVE_STATUS 10 Hz
 ```
 
-`/cmd_vel` is the standard ROS velocity topic (m/s, rad/s), so Nav2 can drive the rover through the same path later.
+`/cmd_vel` is the standard ROS velocity topic (m/s, rad/s). On this branch (`visual-odom-serial`) Nav2 can drive the
+rover through the same path: **Triangle** switches to AUTO and RViz goals take over ([AUTONOMY.md](AUTONOMY.md)).
 The link between the rover laptop and the ESP32 depends on the branch (below); [LINK.md](LINK.md) describes this
 branch's.
 
@@ -19,6 +20,7 @@ branch's.
 |---|---|---|
 | `main` | the ESP32's USB port, serial at 115200 baud | 2.0.x |
 | `ethernet-udp` | a W5500 Ethernet module on the ESP32, UDP to a dedicated Ethernet port of the rover laptop (the ESP32 is still powered over USB) | 3.0.x |
+| `visual-odom-serial` | as `main`, plus autonomous navigation: ZED 2i visual odometry, RTAB-Map, Nav2 ([AUTONOMY.md](AUTONOMY.md)) | 2.0.x |
 
 Everything else is the same on both: the controls, the safety rules, `base_teleop`, `/cmd_vel`, the configuration.
 
@@ -51,6 +53,7 @@ stay clean.
 | **L1** (hold) | Slow mode: 35 % of normal speed |
 | **Circle** | **E-stop**: latches immediately, the rover stops |
 | **Options** | Release the e-stop: only works with **both sticks centred** |
+| **Triangle** | AUTO on/off (`visual-odom-serial`): Nav2 drives to RViz goals; a stick push or Circle takes over ([AUTONOMY.md](AUTONOMY.md)) |
 
 The e-stop starts **latched**. After launching, centre the sticks and press Options to start driving.
 
@@ -90,12 +93,15 @@ ros2_ws/src/rover_pilot_remastered/   ROS 2 Humble package (Python)
   config/wheels/*.yaml         one file per wheel type
   launch/                      base_station.launch.py, rover.launch.py
   test/                        pytest (protocol, kinematics, e-stop logic, end-to-end, ROS integration)
+ros2_ws/src/rover_autonomy/    autonomy (AUTONOMY.md): drive_mux, goal_manager, Nav2/EKF/RTAB-Map configs, URDF, launch
 tools/gen_test_vectors.py      generates byte-exact test vectors shared by the C++ and Python tests
 tools/wheel_test.py            ROS-free wheel identification test for the bench
 tools/rehearsal.py             dress rehearsal of the bench test against the simulated ESP32 and PS5
+tools/rehearsal_auto.py        dress rehearsal of AUTO mode: real Nav2 against a simulated rover (AUTONOMY.md)
 tools/profile.py               measures the ESP32's CPU load and memory under worst-case commands (profiling build)
 tools/install_hooks.sh         once per clone: rebuild ros2_ws after every branch switch and pull (tools/git-hooks/)
 LINK.md                        this branch's link: wiring, rover laptop setup, launch arguments, simulator, its files
+AUTONOMY.md                    AUTO mode: controls, install, measurements, launch, maps, rehearsal
 ```
 
 ## Setup
@@ -209,6 +215,7 @@ The rover log shows every state change (`stopped: e-stop`, `driving enabled`, `E
 | `max_linear_speed` / `max_angular_speed` | auto | Full-stick speed; auto = rover top speed / spin in place at full PWM |
 | `deadzone`, `slow_scale` | 0.08, 0.35 | Stick deadzone; slow-mode factor |
 | `estop_button`, `release_button`, `slow_button` | 3, 1, 4 | Circle, Options, L1, as `joy_node` numbers this PS5 |
+| `auto_button` | 2 | Triangle: AUTO on/off (AUTONOMY.md); -1 disables AUTO |
 | `cmd_timeout_s` / `estop_timeout_s` | 0.3 / 0.5 | Rover side: stale `/cmd_vel` → zero; stale e-stop heartbeat → e-stop |
 | `require_estop_heartbeat` | true | Set false only for autonomous runs that must continue without the base station link |
 | `swap_sides` | false | Swap left and right (wiring fix) |
@@ -224,9 +231,11 @@ rover launch at it, then `ros2 launch rover_pilot_remastered base_station.launch
 ```bash
 # Dress rehearsal of the whole bench test: real launch files, simulated ESP32 and PS5, every stop timed (about 1 min)
 python3 tools/rehearsal.py                                          # ROS sourced and the workspace built; exit 1 on any FAIL
+python3 tools/rehearsal_auto.py                                     # AUTO mode with the real Nav2 (needs Nav2 installed; about 5 min)
 
 # Test suites
 cd ros2_ws/src/rover_pilot_remastered && python3 -m pytest test   # protocol, kinematics, e-stop logic, end-to-end, ROS integration
+cd ros2_ws/src/rover_autonomy && python3 -m pytest test           # AUTO rules, mux, goal manager, Nav2 parameters, launch remaps
 cd firmware && pio test -e native                                  # firmware state machine and protocol
 python3 tools/gen_test_vectors.py --check                          # C++ and Python vectors agree
 ```
@@ -269,6 +278,6 @@ States: `BOOT`, `NO_COMMAND`, `ESTOP`, `WAIT_NEUTRAL`, `DRIVING`. The firmware i
 ## Known limits and warnings
 
 - **`arm_node` still scans every USB serial port** (`ctrl.SerialPortChecker`). Opening the drive ESP32's port that way can reset it or disturb the link while driving: the rover stops, by design, but it is disruptive. Give the arm ESP32 its own udev name and open that directly before running `arm_node` alongside this.
-- No encoders, so no `/odom`: Nav2 will need visual odometry (ZED / rtabmap) until the CAN slaves report wheel speeds.
+- No encoders, so no wheel odometry: Nav2 runs on the ZED's visual odometry (AUTONOMY.md) until the CAN slaves report wheel speeds.
 - Open-loop speed: actual speed varies with battery voltage and terrain.
 - The software e-stop depends on the radio link and the laptops; it is not a replacement for the physical kill switch.
