@@ -102,6 +102,7 @@ tools/profile.py               measures the ESP32's CPU load and memory under wo
 tools/install_hooks.sh         once per clone: rebuild ros2_ws after every branch switch and pull (tools/git-hooks/)
 LINK.md                        this branch's link: wiring, rover laptop setup, launch arguments, simulator, its files
 AUTONOMY.md                    AUTO mode: controls, install, measurements, launch, maps, rehearsal
+ROVER_LAPTOP.md                a new rover laptop from a blank Ubuntu 22.04: NVIDIA, ZED, ROS, network, tmux
 ```
 
 ## Setup
@@ -120,6 +121,8 @@ Settings are in `include/config.h`: pins and directions are copied from the old 
 GPIO 12 (left-back direction) is an ESP32 **strapping pin**. If the board ever fails to boot with the motor drivers connected, move that signal to a free non-strapping GPIO and update `config.h`.
 
 ### 2. Rover laptop (Ubuntu 22.04 + ROS 2 Humble)
+
+A new laptop from a blank Ubuntu, with the ZED and the autonomy stack on `visual-odom-serial`: [ROVER_LAPTOP.md](ROVER_LAPTOP.md).
 
 ```bash
 sudo apt install ros-humble-rmw-cyclonedds-cpp ros-humble-diagnostic-msgs python3-serial

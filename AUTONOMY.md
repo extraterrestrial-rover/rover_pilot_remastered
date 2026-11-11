@@ -59,6 +59,9 @@ times. It never backs up, because the camera can't see behind the rover.
 
 ## Install (once)
 
+A new rover laptop from a blank Ubuntu 22.04, step by step (driver, ZED SDK, wrapper, network, power settings,
+tmux): [ROVER_LAPTOP.md](ROVER_LAPTOP.md). In short:
+
 **Rover laptop** (Ubuntu 22.04, ROS 2 Humble, the NVIDIA GPU the ZED SDK needs):
 
 ```bash
