@@ -55,8 +55,9 @@ load (`nvidia-smi` fails): run `sudo update-secureboot-policy --enroll-key`, reb
 
 ## 3. ZED SDK
 
-Download the latest **ZED SDK for Ubuntu 22.04, CUDA 12** (`.run` file, version 5.2 or newer) from
-<https://www.stereolabs.com/developers/release>. Then:
+Download the latest **ZED SDK for Ubuntu 22.04** (`.run` file, version 5.2 or newer) from
+<https://www.stereolabs.com/developers/release>. The `cudaXX.X` in its file name is the CUDA version it uses (12.x and
+13.x both run on a driver whose `nvidia-smi` shows that version or newer). Then:
 
 ```bash
 cd ~/Downloads
@@ -68,14 +69,39 @@ Answers: accept the licence; **yes** to installing CUDA if it offers; **no** to 
 optimising the AI models (it takes a while now instead of at the first launch); the Python API and the samples are
 not needed. Reboot when it finishes.
 
+**Check CUDA.** The "CUDA Version" that `nvidia-smi` shows is only the newest CUDA the driver supports. The SDK needs
+the CUDA toolkit itself. The installer may report that it can't find CUDA and then install it. Check that it's there
+and that the SDK's libraries resolve:
+
+```bash
+ls /usr/local | grep -i cuda                                  # a cuda-12.x or cuda-13.x folder
+ldd /usr/local/zed/lib/libsl_zed.so | grep "not found"        # must print nothing
+ls -l /usr/local/cuda && /usr/local/cuda/bin/nvcc --version   # the ZED wrapper's build (step 5) looks here
+```
+
+- **A `cuda-13.0` folder but no `/usr/local/cuda`**: link it, `sudo ln -s /usr/local/cuda-13.0 /usr/local/cuda`
+  (with your folder's name).
+- **No CUDA folder, or `ldd` lists missing libraries**: install the toolkit that the SDK's file name asks for, then
+  run the SDK installer again. For example, `…_cuda12.8_…` needs `cuda-toolkit-12-8`. Install only the toolkit: the
+  `cuda` and `cuda-drivers` packages would replace the working driver.
+  ```bash
+  wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+  sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt update
+  sudo apt install -y cuda-toolkit-12-8
+  ```
+
 Plug the ZED 2i **straight into a USB 3 port** (blue, or marked SS), not through a hub. Then check that it shows up
 and that you get a picture and depth:
 
 ```bash
 lsusb | grep -i 2b03                        # Stereolabs: the camera and its sensors
 /usr/local/zed/tools/ZED_Explorer           # live picture (needs the screen)
-/usr/local/zed/tools/ZED_Depth_Viewer       # depth and point cloud
+/usr/local/zed/tools/ZED_Depth_Viewer       # depth and point cloud: the real CUDA test
 ```
+
+ZED_Explorer can show a picture even without CUDA; depth needs it. If the installer couldn't optimise the AI models
+(CUDA was missing at that point), the depth viewer's first start pauses for several minutes to do it. Let it finish
+once.
 
 ## 4. ROS 2 packages
 
@@ -101,7 +127,8 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install --cmake-args=-DCMAKE_BUILD_TYPE=Release --packages-skip zed_debug
 ```
 
-The build takes 10 to 30 minutes. If it stops with the compiler killed (out of memory), rerun it with
+Build it only once the depth viewer works (step 3): it needs CUDA at `/usr/local/cuda`. The build takes 10 to 30
+minutes. If it stops with the compiler killed (out of memory), rerun it with
 `--parallel-workers 1` added. The wrapper's `master` branch needs ZED SDK 5.2 or newer. With an older SDK, check out
 the wrapper release that matches it (its GitHub releases page) before building.
 
@@ -122,6 +149,7 @@ cat >> ~/.bashrc <<'EOF'
 source /opt/ros/humble/setup.bash
 source ~/zed_ws/install/local_setup.bash
 source ~/rover_pilot_remastered/ros2_ws/install/local_setup.bash
+export PATH=/usr/local/cuda/bin:$PATH
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export ROS_DOMAIN_ID=0        # CHANGE: the base station's number
 EOF
@@ -258,6 +286,8 @@ A launch started outside tmux dies with the SSH session.
 | `/dev/ttyUSB0` appears and vanishes a second later | `brltty` claims the chip: `sudo apt remove brltty`, replug |
 | `cannot open /dev/rover-drive: Permission denied` | not in `dialout` yet: log out and in, or reboot |
 | `nvidia-smi`: "couldn't communicate with the NVIDIA driver" | Secure Boot key not enrolled (step 2), or no reboot since the install |
+| ZED SDK installer: "CUDA not found" | step 3, "Check CUDA": it may have installed CUDA itself; check with `ldd` |
+| ZED wrapper build: CUDA not found, or `Specify CUDA_TOOLKIT_ROOT_DIR` | no `/usr/local/cuda` link: step 3, "Check CUDA" |
 | ZED not found, or `CAMERA STREAM FAILED TO START` | not on a USB 3 port, a hub in between, or the cable; `lsusb \| grep -i 2b03` |
 | The base station sees no rover topics | same `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` on both; Wi-Fi off; `ping` works; neither sets `ROS_LOCALHOST_ONLY=1` |
 | The launch ended when SSH dropped | it ran outside tmux: always `tmux new -A -s rover` first |
