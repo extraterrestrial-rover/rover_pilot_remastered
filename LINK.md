@@ -11,7 +11,7 @@ so the laptop's network setup serves both, and the CAN master can later take the
 ## On this branch
 
 - Link: Ethernet (W5500, UDP): ESP32 192.168.77.2:47700, rover laptop 192.168.77.1:47701 on its own port
-- Firmware: fw 3.0.0 (Arduino-ESP32 core 3.x). Flash it over USB: `cd firmware && pio run -e esp32doit-devkit-v1 -t upload`
+- Firmware: fw 3.0.1 (Arduino-ESP32 core 3.x). Flash it over USB: `cd firmware && pio run -e esp32doit-devkit-v1 -t upload`
 - Rover: `ros2 launch rover_pilot_remastered rover.launch.py interface:=<the ESP32's port, e.g. enx001122334455>`
 
 ## Wiring
@@ -21,9 +21,9 @@ pins drive motors, so the bus goes to free GPIOs (`config.h`, `W5500_*`):
 
 | W5500 board | ESP32 | Notes |
 |---|---|---|
-| 3.3V (or V, 3V3) | 3V3 | About 130 mA peak, from the DevKit's regulator (USB-powered). Leave a 5V pin unconnected |
+| 3.3V (or V, 3V3) | 3V3 | About 130 mA peak, from the DevKit's regulator (USB-powered). Leave a 5V pin unconnected. Put a 100 µF and a 100 nF capacitor across 3.3V and GND at the W5500 board ("If the link drops out" below) |
 | GND | GND | |
-| SCLK (SCK) | GPIO 16 | 16 MHz SPI (`W5500_SPI_MHZ`); keep the wires short (under about 10 cm) |
+| SCLK (SCK) | GPIO 16 | 8 MHz SPI (`W5500_SPI_MHZ`); keep the wires short (under about 10 cm) |
 | MOSI (MO) | GPIO 17 | |
 | MISO (MI) | GPIO 34 | an input-only GPIO, fine for MISO |
 | SCS (CS, SS) | GPIO 5 | a strapping pin, but its boot level (high) is the idle level of a chip select: no pull-down on it |
@@ -144,11 +144,19 @@ The bench tools take the same settings as options: `python3 tools/wheel_test.py 
 
 ## Firmware
 
-- Arduino-ESP32 core **3.x** only (pioarduino): the W5500 goes through its `ETH` library (ESP-IDF's W5500 driver and
-  lwIP). Core 2.x has no SPI Ethernet; `main` keeps building on it.
+- Arduino-ESP32 core **3.x** only: the W5500 goes through its `ETH` library (ESP-IDF's W5500 driver and lwIP), and
+  core 2.x has no SPI Ethernet. `firmware/platformio.ini` pins the platform to pioarduino 55.03.311 (core 3.3.11), so
+  every computer builds the same firmware; with a bare `platform = espressif32` a fresh PlatformIO installs core 2.x
+  and the build stops with an `#error`.
 - After a reset, the Ethernet link takes 1–3 s to come up; the motors stay off until a neutral command anyway.
 - The network never blocks the control loop. With the cable out, no commands arrive and the 300 ms timeout stops the
-  motors; when it is back, traffic resumes without a reset, and the ESP32 waits for centred sticks as after any stop.
+  motors.
+- **Link watchdog.** Once commands have been heard, 2 s without one restarts the ESP32 (`LINK_RESTART_SILENCE_MS` in
+  `config.h`; 0 turns it off). That is what pressing EN does, and it initialises the W5500 again if it had dropped
+  out ("If the link drops out" below). It restarts once per silence, then waits for the onboard computer; the rover
+  log shows `ESP32 lost` and, about 3 s later, `ESP32 back`, and `/diagnostics` shows `esp_reset_reason` 3 (software
+  reset) and a small `esp_uptime_s`. Stopping `drive_node` or a bench tool also causes one such restart, which costs
+  nothing. After it the ESP32 waits for centred sticks, as after any stop.
 - The ESP32 takes commands only from 192.168.77.1. Datagrams from any other address, and a packet cut off at the end
   of a datagram, are dropped and counted in `esp_rx_bad`.
 - The USB port is not part of the link. It prints a few lines at 115200 baud: the firmware version and whether the
@@ -160,11 +168,41 @@ The bench tools take the same settings as options: `python3 tools/wheel_test.py 
 1. **Link:** after flashing, the jack's LEDs light, the USB text says `W5500 started`, and `ping -c 3 192.168.77.2`
    answers.
 2. **Wheels:** `python3 tools/wheel_test.py --interface <port>` (README, "First test on the bench"): every line says
-   **fw 3.0.0**.
+   **fw 3.0.1**.
 3. **Cable out:** while driving, pull the Ethernet cable. The wheels stop within 0.3 s; the rover log says
-   `ESP32 lost ... (the PC port has no carrier: Ethernet cable out?)`. Plug it back with a stick pushed: nothing moves
-   until the sticks are centred.
+   `ESP32 lost ... (the PC port has no carrier: Ethernet cable out?)`. Two seconds later the ESP32 restarts itself
+   (link watchdog; its LED goes back to the slow blink). Plug the cable back with a stick pushed: nothing moves until
+   the sticks are centred.
 4. **`/diagnostics`:** `link_send_errors` and `esp_rx_bad` stay at 0 while the cable is in; `interface` says `up`.
+
+## If the link drops out while driving
+
+What it looks like: the rover drives for some seconds, then stops; the onboard computer cannot even `ping
+192.168.77.2` although the jack's LEDs are on; pressing EN on the ESP32 brings it back for a while.
+
+What happens: the W5500 resets or loses its registers while the ESP32 keeps running. Its LEDs come back on by
+themselves, but its MAC address and socket setup are gone, and nothing gets through until it is initialised again.
+The usual causes are on the board, not in the code: a dip on the W5500's 3.3 V supply, or noise on the SPI wires,
+when the motors start.
+
+Firmware 3.0.1 recovers by itself: the link watchdog (above) restarts the ESP32 two seconds after the commands stop,
+so the rover is drivable again after about 5 s instead of staying dead. That hides the fault; it does not remove it.
+To find and remove it, wheels off the ground:
+
+1. **Is it the motors?** Unplug the motor power (kill switch off; the ESP32 stays on over USB) and "drive" for five
+   minutes. `esp_uptime_s` in `/diagnostics` keeps counting up and `esp_reset_reason` stays what it was: the W5500 is
+   fine without motor current, so the cause is supply or noise from the motors. If it still restarts, it is the
+   wiring or the board itself.
+2. **Supply.** Solder or plug a 100 µF electrolytic and a 100 nF ceramic capacitor across 3.3V and GND right at the
+   W5500 board. If that helps but not fully, give the W5500 its own 3.3 V regulator from 5 V instead of the DevKit's
+   3V3 pin. Measure 3.3V at the W5500 while a motor starts: it must stay above 3.1 V.
+3. **SPI wires.** Keep them under 10 cm, away from the motor wires, with GND next to SCLK. Try `W5500_SPI_MHZ 4`.
+   Add a 10 kΩ resistor from the W5500's RST pin to 3.3V, so a glitch on that wire cannot reset the chip.
+4. **Grounds.** One thick ground from the motor drivers to the battery; the ESP32's ground joins it at one point,
+   not through the W5500 board.
+
+Each automatic restart shows in `/diagnostics` as `esp_reset_reason` 3 with `esp_uptime_s` starting again, so you
+can count them before and after a change.
 
 ## Simulator
 
@@ -181,7 +219,8 @@ ros2 launch rover_pilot_remastered rover.launch.py master:=127.0.0.1
 |---|---|
 | `UDP port 47701 is in use` | Another `drive_node`, a bench tool or the CAN bridge is running: stop it |
 | `nothing heard from the ESP32` / `no status from the ESP32` | The cable or the ESP32's power; the laptop port has no 192.168.77.1/24 (`ip -br addr`); the ESP32 still runs the USB firmware (fw 2.x): flash this branch's |
-| USB text: `W5500 NOT answering` | SPI wiring (SCLK/MOSI/MISO/CS swapped or loose), the W5500's 3.3 V or GND, or RST. Try `W5500_SPI_MHZ 8` with long wires |
+| USB text: `W5500 NOT answering` | SPI wiring (SCLK/MOSI/MISO/CS swapped or loose), the W5500's 3.3 V or GND, or RST. Try `W5500_SPI_MHZ 4` with long wires |
+| The rover stops after some seconds of driving and is back about 5 s later; `esp_reset_reason` 3 | The W5500 dropped out and the firmware restarted itself: "If the link drops out while driving" above |
 | Link LEDs dark | Cable, or the W5500 has no power |
 | Ping works, nothing heard | `local_port`/`master_port` differ from the firmware's ports, or a firewall drops UDP 47701 (`sudo ufw status`) |
 | `interface: ... NOT pinned` in `/diagnostics` | The `interface:=` name is wrong: compare with `ip -br link` |
@@ -197,12 +236,12 @@ The link-specific code on this branch; `main` has its own versions of these, eve
 | File | What it does here |
 |---|---|
 | `firmware/src/net_link.cpp/.h` | the W5500 (ETH), the static address, the UDP socket |
-| `firmware/lib/udp_frames/` | datagram rules and the source check (unit-tested: `test/test_udp/`) |
+| `firmware/lib/udp_frames/` | datagram rules, the source check and the link watchdog (unit-tested: `test/test_udp/`) |
 | `firmware/src/main.cpp`, `firmware/include/config.h`, `firmware/platformio.ini` | the link glue, the W5500 pins and the addresses, core 3.x |
 | `ros2_ws/.../udp_link.py` | the PC side: datagrams, source check, interface pin, carrier |
 | `ros2_ws/.../drive_node.py` | uses `udp_link`; "ESP32 lost/back" and the link's `/diagnostics` |
 | `ros2_ws/.../fake_esp.py` | the simulator on UDP (`Simulator` for the tests and the rehearsal) |
-| `ros2_ws/.../launch/rover.launch.py`, `config/drive.yaml`, `package.xml`, `setup.py` | `master:=`, `interface:=`, the ports; version 3.0.0 |
+| `ros2_ws/.../launch/rover.launch.py`, `config/drive.yaml`, `package.xml`, `setup.py` | `master:=`, `interface:=`, the ports; version 3.0.1 |
 | `tools/wheel_test.py`, `tools/profile.py` | talk UDP (`udp_link`) |
 | `ros2_ws/.../test/test_udp_link.py`, `test_end_to_end.py`, `test_ros_integration.py` | run over UDP |
 | `udev/99-rover-drive.rules` | not used here; kept, so an installed rule keeps working after `git switch main` |

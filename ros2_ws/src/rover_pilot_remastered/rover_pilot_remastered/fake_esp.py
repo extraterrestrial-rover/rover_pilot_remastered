@@ -3,6 +3,9 @@
 It speaks the real protocol over UDP, like the Ethernet firmware (LINK.md), and mirrors the firmware's safety state
 machine (firmware/lib/drive_core): neutral command required after boot / timeout / e-stop, 300 ms command timeout,
 open-loop rpm -> PWM, DRIVE_STATUS at 10 Hz. It accepts datagrams only from the PC's address, as the firmware does.
+One thing it leaves out: the firmware restarts itself 2 s after commands stop (its link watchdog, for a W5500 that
+dropped out) and is then in BOOT, where this simulator stays in NO_COMMAND. Both mean: motors off until a neutral
+command.
 
     ros2 run rover_pilot_remastered fake_esp                        # 127.0.0.1:47700, status to 127.0.0.1:47701
     ros2 launch rover_pilot_remastered rover.launch.py master:=127.0.0.1
@@ -21,7 +24,7 @@ import time
 from rover_pilot_remastered import protocol
 
 BOOT, NO_COMMAND, ESTOP, WAIT_NEUTRAL, DRIVING = 0, 1, 2, 3, 4
-FIRMWARE_VERSION = (3, 0, 0)  # firmware/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
+FIRMWARE_VERSION = (3, 0, 1)  # firmware/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
 
 
 class FakeController:

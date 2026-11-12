@@ -5,7 +5,7 @@
 
 #define FIRMWARE_VERSION_MAJOR 3  // 3.x: the Ethernet (W5500) edition, branch ethernet-udp; 2.x is the USB serial one
 #define FIRMWARE_VERSION_MINOR 0
-#define FIRMWARE_VERSION_PATCH 0
+#define FIRMWARE_VERSION_PATCH 1
 
 // USB: power and flashing only, plus a few lines of bring-up text at this baud. The packets travel over Ethernet.
 #define SERIAL_BAUD 115200
@@ -18,7 +18,7 @@
 #define W5500_CS_PIN 5     // a strapping pin, but its boot level (high) is a chip select's idle level
 #define W5500_INT_PIN 35   // input-only GPIO; -1 if INT is not wired (the driver then polls the W5500 every 10 ms)
 #define W5500_RST_PIN 4
-#define W5500_SPI_MHZ 16  // try 8 if the SPI wires are long
+#define W5500_SPI_MHZ 8   // through the GPIO matrix and jumper wires; 50 small packets a second need no more
 // The same addresses and ports as the rover's CAN master (telemetry_dashboard protocol/ETHERNET_LINK.md), on a
 // private two-device subnet with no gateway. Must match the drive node's master_host / master_port / local_port.
 #define ESP_IP_OCTETS 192, 168, 77, 2
@@ -34,6 +34,9 @@
 
 // Safety and smoothness.
 #define COMMAND_TIMEOUT_MS 300  // stop if no valid DRIVE_COMMAND for this long
+// The W5500 can drop out while the ESP32 keeps running (lib/udp_frames/src/link_watchdog.h): once commands have been
+// heard, this long without one restarts the ESP32, which initialises the W5500 again. 0 turns it off.
+#define LINK_RESTART_SILENCE_MS 2000
 #define SLEW_PWM_PER_S 1020.0f  // max PWM change per second while driving (255 in 250 ms); 0 = unlimited. Stops are immediate.
 
 // Timing.

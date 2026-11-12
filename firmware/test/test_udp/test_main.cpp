@@ -3,6 +3,7 @@
 #include <unity.h>
 
 #include "../test_native/vectors.h"
+#include "link_watchdog.h"
 #include "udp_frames.h"
 
 static const uint8_t kPc[4] = {192, 168, 77, 1};
@@ -82,6 +83,42 @@ void test_garbage_is_counted_not_decoded() {
   TEST_ASSERT_EQUAL_UINT16(2, receiver.bad());
 }
 
+void test_no_restart_before_the_pc_was_ever_heard() {
+  udp::LinkWatchdog watchdog(2000);
+  TEST_ASSERT_FALSE(watchdog.restart_due(0, true));
+  TEST_ASSERT_FALSE(watchdog.restart_due(3600000, true));  // an hour of waiting for the PC: no restart loop
+}
+
+void test_restart_when_commands_stop_after_being_heard() {
+  udp::LinkWatchdog watchdog(2000);
+  watchdog.on_command(1000);
+  TEST_ASSERT_FALSE(watchdog.restart_due(1000, true));
+  TEST_ASSERT_FALSE(watchdog.restart_due(2999, true));  // 50 Hz commands: gaps far below this never restart
+  TEST_ASSERT_TRUE(watchdog.restart_due(3000, true));
+  watchdog.on_command(3100);  // the PC is back before the restart happened: nothing to do
+  TEST_ASSERT_FALSE(watchdog.restart_due(3200, true));
+}
+
+void test_no_restart_while_the_motors_run() {
+  udp::LinkWatchdog watchdog(2000);
+  watchdog.on_command(0);
+  TEST_ASSERT_FALSE(watchdog.restart_due(5000, false));  // cannot happen for long: the 300 ms timeout stops them
+  TEST_ASSERT_TRUE(watchdog.restart_due(5000, true));
+}
+
+void test_the_watchdog_can_be_turned_off_and_survives_the_millis_wrap() {
+  udp::LinkWatchdog off(0);
+  off.on_command(0);
+  TEST_ASSERT_FALSE(off.restart_due(100000, true));
+  udp::LinkWatchdog watchdog(2000);
+  const uint32_t near_wrap = 0xFFFFFF00u;
+  watchdog.on_command(near_wrap);
+  TEST_ASSERT_FALSE(watchdog.restart_due(near_wrap + 1999, true));  // wraps past zero
+  TEST_ASSERT_TRUE(watchdog.restart_due(near_wrap + 2000, true));
+  watchdog.on_command(near_wrap + 2100);
+  TEST_ASSERT_FALSE(watchdog.restart_due(near_wrap + 2099, true));  // a check stamped just before the command
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_command_from_the_pc_is_accepted);
@@ -89,5 +126,9 @@ int main() {
   RUN_TEST(test_several_packets_in_one_datagram);
   RUN_TEST(test_a_cut_off_tail_never_joins_the_next_datagram);
   RUN_TEST(test_garbage_is_counted_not_decoded);
+  RUN_TEST(test_no_restart_before_the_pc_was_ever_heard);
+  RUN_TEST(test_restart_when_commands_stop_after_being_heard);
+  RUN_TEST(test_no_restart_while_the_motors_run);
+  RUN_TEST(test_the_watchdog_can_be_turned_off_and_survives_the_millis_wrap);
   return UNITY_END();
 }

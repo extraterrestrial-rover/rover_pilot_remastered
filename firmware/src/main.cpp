@@ -7,13 +7,16 @@
 //  - e-stop flag -> motors off and latched until commands without the flag arrive, starting with a neutral one;
 //  - garbled, partial or corrupted input is discarded (COBS + CRC framing), never interpreted as a speed, and only the
 //    onboard PC's address may send commands (lib/udp_frames);
-//  - the network never blocks the loop: with the cable out, the command timeout stops the motors as for any lost link.
+//  - the network never blocks the loop: with the cable out, the command timeout stops the motors as for any lost link;
+//  - once commands have been heard, LINK_RESTART_SILENCE_MS without one restarts the ESP32, so a W5500 that dropped
+//    out is initialised again (lib/udp_frames/src/link_watchdog.h). It boots with the motors off, as always.
 #include <Arduino.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
 #include "config.h"
 #include "drive_core.h"
+#include "link_watchdog.h"
 #include "net_link.h"
 #include "udp_frames.h"
 #if DRIVE_PROFILE
@@ -28,6 +31,7 @@ const uint8_t kPcIp[4] = {PC_IP_OCTETS};
 
 drive::DriveController controller(kControllerConfig);
 udp::DatagramReceiver receiver(kPcIp);
+udp::LinkWatchdog link_watchdog(LINK_RESTART_SILENCE_MS);
 uint8_t tx_seq = 0;
 uint32_t last_control_ms = 0;
 uint32_t last_status_ms = 0;
@@ -135,6 +139,7 @@ void loop() {
     if (length == 0) break;
     receiver.feed(source_ip, datagram, length, [&](const drive::Packet& packet) {
       if (!drive::parse_drive_command(packet, command)) return;
+      link_watchdog.on_command(now_ms);
       controller.on_command(command, now_ms);
       if (!controller.motors_enabled()) apply_outputs();  // stops take effect immediately
     });
@@ -149,6 +154,13 @@ void loop() {
   if (now_ms - last_status_ms >= STATUS_PERIOD_MS) {
     last_status_ms = now_ms;
     send_status(now_ms);
+  }
+  if (link_watchdog.restart_due(now_ms, !controller.motors_enabled())) {
+    // Commands were arriving and stopped: if the W5500 lost its setup, only initialising it again brings the link
+    // back, and a restart does that from scratch (as the EN button does). The motors are already off.
+    Serial.println("commands stopped: restarting to initialise the W5500 again");
+    Serial.flush();
+    ESP.restart();
   }
 #if DRIVE_PROFILE
   if (profiler::report_due()) send_profile();  // counted in this pass's busy time, so the measurement errs high
