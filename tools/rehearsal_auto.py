@@ -12,6 +12,8 @@ RViz-style goals, and checks where the rover ends up. Stand-ins, all in this pro
   - RTAB-Map: an identity map -> odom and an empty 30 m x 30 m /map;
   - the radio: the base station runs in its own ROS domain, and this script relays its three topics (/cmd_vel,
     /rover/estop, /rover/auto) to the rover's domain; "radio lost" stops the relay;
+  - both domains are this script's own (61 and 62, --rover-domain / --base-domain), ROS traffic stays on this
+    machine, and it refuses to start if another node is already in either domain: it drives a (simulated) rover;
   - the PS5: /joy from this script, in the base station's domain.
 
 Needs ROS 2 Humble with Nav2 and robot_localization (AUTONOMY.md, "Install"), this workspace built and sourced:
@@ -52,7 +54,7 @@ from tf2_ros import StaticTransformBroadcaster  # noqa: E402
 from tf2_ros.buffer import Buffer  # noqa: E402
 from tf2_ros.transform_listener import TransformListener  # noqa: E402
 
-from rover_pilot_remastered import fake_esp  # noqa: E402
+from rover_pilot_remastered import fake_esp, ros_sandbox  # noqa: E402
 from rover_pilot_remastered.kinematics import DriveGeometry  # noqa: E402
 
 PILOT = SRC / 'rover_pilot_remastered' / 'config'
@@ -387,6 +389,10 @@ class Rehearsal:
     # ------------------------------------------------------------------ the run
     def run(self) -> bool:
         print(f'logs in {self.logs}; rover in ROS domain {self.rover_domain}, base station in {self.base_domain}', flush=True)
+        for domain, node in ((self.rover_domain, self.node), (self.base_domain, self.base)):
+            others = ros_sandbox.foreign_nodes(node)
+            if not self.check(f'ROS domain {domain} is ours alone', not others, ros_sandbox.refusal(domain, others) if others else 'no other node'):
+                return False
         print('\n1. Launch the rover (Nav2, EKF, mux, goal manager, drive node) and the base station', flush=True)
         self.start_rover()
         self.start_base()
@@ -513,6 +519,13 @@ def main() -> int:
     parser.add_argument('--rover-domain', type=int, default=61, help='ROS_DOMAIN_ID of the rover side (default 61)')
     parser.add_argument('--base-domain', type=int, default=62, help='ROS_DOMAIN_ID of the base station side (default 62)')
     args = parser.parse_args()
+    try:
+        ros_sandbox.enter(args.base_domain)  # keeps ROS traffic on this machine; each side then gets its own domain
+        ros_sandbox.enter(args.rover_domain, {})
+    except ValueError as error:
+        parser.error(str(error))
+    if args.rover_domain == args.base_domain:
+        parser.error('the rover and the base station need two different domains (the script is the radio between them)')
     logs = Path(tempfile.mkdtemp(prefix='rehearsal_auto_'))
     rehearsal = Rehearsal(args.wheels, logs, args.rover_domain, args.base_domain)
     try:
