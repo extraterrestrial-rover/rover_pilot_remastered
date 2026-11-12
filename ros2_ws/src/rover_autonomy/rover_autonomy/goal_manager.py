@@ -12,6 +12,7 @@ import time
 
 import rclpy
 from action_msgs.msg import GoalStatus
+from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
@@ -19,8 +20,13 @@ from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time as RosTime
 from std_msgs.msg import Bool, String
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 
+from rover_autonomy.frames import compose
 from rover_autonomy.goal_logic import CANCEL, SEND, GoalLogic
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -31,7 +37,14 @@ class GoalManager(Node):
         super().__init__('goal_manager')
         param = self.declare_parameter
         self.logic = GoalLogic(param('link_timeout_s', 0.5).value)
-        self.nav = ActionClient(self, NavigateToPose, param('action_name', 'navigate_to_pose').value)
+        action = param('action_name', 'navigate_to_pose').value
+        self.nav = ActionClient(self, NavigateToPose, action)
+        self.map_frame = param('map_frame', 'map').value
+        self.tf = Buffer()
+        self.tf_listener = TransformListener(self.tf, self)
+        # Goals Nav2 may still hold from before this node started (it restarted mid-goal): cancelled once Nav2 is up.
+        self.cancel_all = self.create_client(CancelGoal, f'{action}/_action/cancel_goal')
+        self.cleared = False
         self.events = self.create_publisher(String, param('events_topic', '/rover/autonomy_events').value, 10)
         self.goal_active = self.create_publisher(Bool, param('goal_active_topic', '/rover/goal_active').value, LATEST_ONLY)
         self.create_subscription(PoseStamped, param('goal_topic', '/goal_pose').value, self.on_goal, 10)
@@ -46,7 +59,31 @@ class GoalManager(Node):
         self.get_logger().info('goal manager: /goal_pose -> navigate_to_pose, only in AUTO with the e-stop released')
 
     def on_goal(self, msg: PoseStamped) -> None:
-        self.run(self.logic.on_goal(msg, time.monotonic()))
+        goal = self.in_map(msg)
+        if goal is not None:
+            self.run(self.logic.on_goal(goal, time.monotonic()))
+
+    def in_map(self, msg: PoseStamped) -> PoseStamped | None:
+        """The goal in the map frame, fixed there as it was meant when it was clicked: RViz stamps it in its Fixed
+        Frame, and if that is a frame that moves with the rover, sent as it is the goal would move with it."""
+        if msg.header.frame_id in ('', self.map_frame):
+            msg.header.frame_id = self.map_frame
+            return msg
+        try:
+            transform = self.tf.lookup_transform(self.map_frame, msg.header.frame_id, RosTime())
+        except TransformException as error:
+            self.logic.events.append(f'goal ignored: it is in {msg.header.frame_id}, which has no transform to '
+                                     f'{self.map_frame} ({error}); set RViz\'s Fixed Frame to {self.map_frame}')
+            self.report()
+            return None
+        t, r = transform.transform.translation, transform.transform.rotation
+        p, q = msg.pose.position, msg.pose.orientation
+        x, y, z, qx, qy, qz, qw = compose((t.x, t.y, t.z, r.x, r.y, r.z, r.w), (p.x, p.y, p.z, q.x, q.y, q.z, q.w))
+        goal = PoseStamped()
+        goal.header.frame_id = self.map_frame
+        goal.pose.position.x, goal.pose.position.y, goal.pose.position.z = x, y, z
+        goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = qx, qy, qz, qw
+        return goal
 
     # The heartbeats are only recorded here; the 10 Hz update looks at both together. base_teleop sends them as a
     # pair (the e-stop button: e-stop on and AUTO off), but two topics arrive in either order, and reacting to the
@@ -62,6 +99,9 @@ class GoalManager(Node):
         self.logic.on_fault(msg.data, time.monotonic())
 
     def update(self) -> None:
+        if not self.cleared and self.cancel_all.service_is_ready():
+            self.cancel_all.call_async(CancelGoal.Request())  # an empty request cancels every goal
+            self.cleared = True
         self.run(self.logic.update(time.monotonic()))
 
     def run(self, actions) -> None:
@@ -88,8 +128,8 @@ class GoalManager(Node):
         sequence = self.wanted = self.sequence
         self.goal_handle = None
         goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = pose.header.frame_id
-        goal.pose.header.stamp = Time()  # zero: the latest transform, also when a paused goal is resent minutes later
+        goal.pose.header.frame_id = pose.header.frame_id  # the map frame (in_map)
+        goal.pose.header.stamp = Time()  # zero: the latest transform
         goal.pose.pose = pose.pose
         self.nav.send_goal_async(goal).add_done_callback(lambda future: self.on_response(future, sequence))
         p = pose.pose.position

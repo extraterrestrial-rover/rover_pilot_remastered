@@ -289,9 +289,9 @@ class Rehearsal:
         self.pressed = set()
         time.sleep(0.15)
 
-    def goal(self, x: float, y: float) -> None:
+    def goal(self, x: float, y: float, frame: str = 'map') -> None:
         message = PoseStamped()
-        message.header.frame_id = 'map'
+        message.header.frame_id = frame
         message.header.stamp = self.node.get_clock().now().to_msg()
         message.pose.position.x, message.pose.position.y = x, y
         message.pose.orientation.w = 1.0
@@ -438,6 +438,26 @@ class Rehearsal:
         error = self.ekf_error()
         self.check('EKF (odom -> base_footprint) matches the rover', error is not None and error[0] < 0.1,
                    f'{error[0]:.3f} m off: {error[1]}' if error is not None else 'no transform')
+
+        print('\n3b. Goals in a moving frame, and goals that bypass goal_manager', flush=True)
+        since = len(self.events)
+        x, y, yaw = self.rover.pose()
+        target = (x + 2.0 * math.cos(yaw), y + 2.0 * math.sin(yaw))  # where "2 m ahead" is when the goal is given
+        self.goal(2.0, 0.0, frame='base_footprint')  # RViz with its Fixed Frame on the rover
+        reached = self.event('goal reached', 90.0, since)
+        distance = self.rover.distance_to(*target)
+        self.check("a goal in the rover's own frame is fixed in the map when it arrives", reached and distance < 0.5,
+                   f'{distance:.2f} m from the point that was 2 m ahead; {self.where()}')
+        bypass = NavigateToPose.Goal()
+        bypass.pose.header.frame_id = 'map'
+        bypass.pose.pose.position.x, bypass.pose.pose.position.y = target[0] - 2.0, target[1]
+        bypass.pose.pose.orientation.w = 1.0
+        sent = self.nav.send_goal_async(bypass)  # around goal_manager, like Nav2's RViz panel
+        self.check('a goal sent to Nav2 around goal_manager does not move the rover', self.holds_still(5.0))
+        handle = sent.result() if sent.done() else None
+        if handle is not None and handle.accepted:
+            handle.cancel_goal_async()
+        time.sleep(1.0)
 
         print('\n4. Radio lost while a goal runs: the rover goes on to its goal, then the e-stop latches', flush=True)
         since = len(self.events)
