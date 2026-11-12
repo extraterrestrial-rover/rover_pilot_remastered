@@ -1,9 +1,10 @@
 """Rover-side mux: the sticks' /cmd_vel or Nav2's /cmd_vel_auto -> /cmd_vel_drive, which drive_node listens to.
 
 The base station's AUTO heartbeat (/rover/auto) picks the input (mux_logic has the rules). drive_node is unchanged:
-the autonomy launch file only remaps its /cmd_vel to /cmd_vel_drive, and it still takes /rover/estop straight from
-the base station, so the e-stop never goes through this node. If this node stops, drive_node's command timeout
-stops the wheels.
+the autonomy launch file only remaps its /cmd_vel to /cmd_vel_drive and its /rover/estop to /rover/estop_drive, which
+this node publishes: the base station's e-stop, passed on the moment it arrives. Only while the base station is
+silent does this node decide: released while AUTO goes on to a running goal, latched otherwise. If this node stops,
+drive_node gets neither commands nor an e-stop heartbeat and stops the rover.
 
 In AUTO it also watches the camera's odometry (zed_odometry's output) and the ESP32's state (drive_node's
 /diagnostics), and reports on /rover/auto_fault when it stopped AUTO by itself, so that goal_manager cancels the goal.
@@ -59,12 +60,17 @@ class DriveMuxNode(Node):
             no_motion_distance_m=param('no_motion_distance_m', defaults.no_motion_distance_m).value,
             no_motion_angle_rad=param('no_motion_angle_rad', defaults.no_motion_angle_rad).value,
             rearm_interval_s=param('rearm_interval_s', defaults.rearm_interval_s).value,
+            goal_timeout_s=param('goal_timeout_s', defaults.goal_timeout_s).value,
+            linkless_limit_s=param('linkless_limit_s', defaults.linkless_limit_s).value,
         )
         self.mux = DriveMux(config, geometry)
         self.output = self.create_publisher(Twist, param('output_topic', '/cmd_vel_drive').value, LATEST_ONLY)
         self.create_subscription(Twist, param('manual_topic', '/cmd_vel').value, self.on_manual, LATEST_ONLY)
         self.create_subscription(Twist, param('auto_cmd_topic', '/cmd_vel_auto').value, self.on_auto_command, LATEST_ONLY)
         self.create_subscription(Bool, param('auto_topic', '/rover/auto').value, self.on_mode, LATEST_ONLY)
+        self.estop_output = self.create_publisher(Bool, param('estop_output_topic', '/rover/estop_drive').value, LATEST_ONLY)
+        self.create_subscription(Bool, param('estop_topic', '/rover/estop').value, self.on_estop, LATEST_ONLY)
+        self.create_subscription(Bool, param('goal_active_topic', '/rover/goal_active').value, self.on_goal_active, LATEST_ONLY)
         self.create_subscription(Odometry, param('odometry_topic', '/zed/odom_base').value, self.on_odometry, 10)
         self.create_subscription(DiagnosticArray, '/diagnostics', self.on_diagnostics, 10)
         self.fault = self.create_publisher(String, param('fault_topic', '/rover/auto_fault').value, LATEST_ONLY)
@@ -74,8 +80,8 @@ class DriveMuxNode(Node):
         self.ticks = 0
         self.last_state = None
         self.get_logger().info(
-            f'drive mux: /cmd_vel (manual) or /cmd_vel_auto (Nav2) -> /cmd_vel_drive; deadband straight '
-            f'{config.min_wheel_rpm_straight} rpm, spin {config.min_wheel_rpm_spin} rpm')
+            f'drive mux: /cmd_vel (manual) or /cmd_vel_auto (Nav2) -> /cmd_vel_drive, /rover/estop -> /rover/estop_drive; '
+            f'deadband straight {config.min_wheel_rpm_straight} rpm, spin {config.min_wheel_rpm_spin} rpm')
 
     def on_manual(self, msg: Twist) -> None:
         command = self.mux.on_manual(msg.linear.x, msg.angular.z, time.monotonic())
@@ -87,6 +93,12 @@ class DriveMuxNode(Node):
 
     def on_mode(self, msg: Bool) -> None:
         self.mux.on_mode(msg.data, time.monotonic())
+
+    def on_estop(self, msg: Bool) -> None:
+        self.estop_output.publish(Bool(data=self.mux.on_estop(msg.data, time.monotonic())))  # at once, not at the tick
+
+    def on_goal_active(self, msg: Bool) -> None:
+        self.mux.on_goal_active(msg.data, time.monotonic())
 
     def on_odometry(self, msg: Odometry) -> None:
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -100,7 +112,9 @@ class DriveMuxNode(Node):
                         self.mux.on_drive_state(item.value, time.monotonic())
 
     def tick(self) -> None:
-        command = self.mux.output(time.monotonic())
+        now = time.monotonic()
+        command = self.mux.output(now)
+        self.estop_output.publish(Bool(data=self.mux.estop_output(now)))  # drive_node's e-stop heartbeat, 50 Hz
         if self.mux.state != self.last_state:
             self.get_logger().warn(self.mux.state) if self.mux.fault else self.get_logger().info(self.mux.state)
             self.last_state = self.mux.state

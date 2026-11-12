@@ -4,8 +4,9 @@ RTAB-Map, Nav2, drive_mux and goal_manager (AUTONOMY.md).
     ros2 launch rover_autonomy rover_autonomy.launch.py [continue_map:=true] [max_speed:=0.3] [wheels:=wheel_28cm]
         [port:=/dev/rover-drive] [zed:=true] [slam:=true] [settings:=<autonomy.yaml>]
 
-Link arguments (port:= on this branch) are passed through to rover.launch.py. drive_node's /cmd_vel is remapped to
-/cmd_vel_drive, drive_mux's output; the e-stop heartbeat still goes to drive_node directly. Every Nav2 velocity output
+Link arguments (port:= on this branch) are passed through to rover.launch.py. drive_node's /cmd_vel and /rover/estop
+are remapped to /cmd_vel_drive and /rover/estop_drive, drive_mux's outputs: it passes the base station's e-stop on as
+it arrives, and decides only while the base station is silent (mux_logic). Every Nav2 velocity output
 is remapped to /cmd_vel_nav -> velocity_smoother -> /cmd_vel_auto, and bt_navigator's own /goal_pose subscription
 away from RViz's topic, so only goal_manager starts goals, and only in AUTO.
 """
@@ -112,6 +113,7 @@ def launch_setup(context):
                         respawn=True, respawn_delay=1.0, parameters=[autonomy]))
     actions.append(GroupAction([
         SetRemap(src='/cmd_vel', dst='/cmd_vel_drive'),
+        SetRemap(src='/rover/estop', dst='/rover/estop_drive'),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(str(pilot / 'launch' / 'rover.launch.py')),
                                  launch_arguments={'wheels': wheels}.items()),
     ]))

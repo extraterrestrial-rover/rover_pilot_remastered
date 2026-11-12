@@ -1,6 +1,7 @@
-"""Which velocity command reaches drive_node: the sticks or Nav2. No ROS, so it is unit-tested.
+"""Which velocity command, and which e-stop, reach drive_node. No ROS, so it is unit-tested.
 
-The base station's AUTO heartbeat (/rover/auto) decides:
+The base station's e-stop heartbeat (/rover/estop) is passed on to drive_node for as long as it arrives: a latched
+e-stop stops the rover whatever else is going on. Its AUTO heartbeat (/rover/auto) decides who drives:
   - MANUAL (also when that heartbeat is missing, as from a base station on a branch without AUTO): the sticks'
     /cmd_vel is passed on as it arrives, unchanged, as when drive_node listens to /cmd_vel directly;
   - AUTO: Nav2's command, after a short run of zeros whenever AUTO (re)starts, because the ESP32 drives again after
@@ -13,6 +14,13 @@ AUTO stops itself (zeros, and a fault that goal_manager cancels the goal on) whe
     deadband set too low for the motors to turn).
 And when drive_node reports that the ESP32 is not driving (it was reset, or its link hiccuped), AUTO sends zeros
 again first: nobody centres a stick for Nav2.
+
+When the base station goes silent (radio, a crashed laptop):
+  - in manual, or in AUTO without a goal, the e-stop is latched: the rover stops, as on main;
+  - in AUTO with a goal running (goal_manager's /rover/goal_active), the rover goes on to its goal: the e-stop stays
+    released for drive_node and Nav2 keeps driving. Nothing at the base station can stop the rover during that time;
+    the kill switch, the odometry checks above and linkless_limit_s can. When the goal has ended, for any reason, the
+    e-stop is latched until the base station is heard again. It is never released again without the base station.
 """
 from __future__ import annotations
 
@@ -32,6 +40,8 @@ class MuxConfig:
     no_motion_distance_m: float = 0.03  # what counts as moving: this far ...
     no_motion_angle_rad: float = 0.03  # ... or this much turned
     rearm_interval_s: float = 1.5  # the ESP32 not driving in AUTO: zeros again, at most this often
+    goal_timeout_s: float = 0.5   # /rover/goal_active older than this: no goal is running
+    linkless_limit_s: float = 0.0  # the longest AUTO may drive to its goal without the base station (0 = no limit)
     # The motors' deadband, as a wheel target in the firmware's rpm units (wheel_test --percent x MAX_WHEEL_RPM / 100):
     min_wheel_rpm_straight: float = 0.0  # where the rover just starts to roll straight ahead (0 = no correction)
     min_wheel_rpm_spin: float = 0.0  # where it just starts to turn in place (skid steer needs much more)
@@ -109,6 +119,13 @@ class DriveMux:
         self._motion_ref: tuple[float, float, float] | None = None
         self._drive_state: str | None = None
         self._drive_state_time = 0.0
+        self._estop: bool | None = None  # the base station's e-stop, as last heard
+        self._estop_time: float | None = None
+        self._goal_active = False
+        self._goal_time: float | None = None
+        self._linkless = False  # driving to the goal without the base station, right now
+        self._linkless_since: float | None = None
+        self._latched = True  # without the base station: stopped until it is heard (again)
         self.fault = ''  # why AUTO stopped itself; '' while it has not
         self.state = 'waiting for the base station'  # for the log
 
@@ -124,6 +141,15 @@ class DriveMux:
     def on_mode(self, auto: bool, now: float) -> None:
         self._auto, self._mode_time = auto, now
 
+    def on_estop(self, estopped: bool, now: float) -> bool:
+        """The base station's e-stop heartbeat. Returns what to pass on to drive_node at once: always its value."""
+        self._estop, self._estop_time = estopped, now
+        return estopped
+
+    def on_goal_active(self, active: bool, now: float) -> None:
+        """goal_manager's heartbeat: a goal is running."""
+        self._goal_active, self._goal_time = active, now
+
     def on_odometry(self, x: float, y: float, yaw: float, now: float) -> None:
         self._odom, self._odom_time = (x, y, yaw), now
         if self._motion_since is None:
@@ -136,22 +162,60 @@ class DriveMux:
         self._drive_state, self._drive_state_time = esp32_state, now
 
     # ------------------------------------------------------------------ output
+    def _heard(self, stamp: float | None, now: float) -> bool:
+        return stamp is not None and now - stamp <= self.config.mode_timeout_s
+
     def in_auto(self, now: float) -> bool:
-        return self._auto is True and self._mode_time is not None and now - self._mode_time <= self.config.mode_timeout_s
+        if self._linkless:
+            return True
+        return (self._heard(self._estop_time, now) and self._estop is False
+                and self._heard(self._mode_time, now) and self._auto is True)
 
     def output(self, now: float) -> tuple[float, float] | None:
-        """Call at the node's rate. In AUTO: the command to send now. In manual: None, because the sticks' commands
-        are passed on as they arrive (on_manual)."""
-        if not self.in_auto(now):
+        """Call at the node's rate, then estop_output(). In AUTO: the command to send now. In manual: None, because
+        the sticks' commands are passed on as they arrive (on_manual)."""
+        if self._heard(self._estop_time, now):  # the base station is there: what it says goes
+            self._latched = self._linkless = False
+            self._linkless_since = None
+            if self._estop:
+                self._leave_auto()
+                self.state = 'e-stop'
+                return None
+            if self.in_auto(now):
+                return self._drive_auto(now, 'AUTO')
             self._leave_auto()
-            if self._mode_time is None:
-                self.state = 'manual: no AUTO heartbeat from the base station (is it on a branch with AUTO?)'
-            elif now - self._mode_time > self.config.mode_timeout_s:
-                self.state = 'manual: base station not heard'
-            else:
-                self.state = 'manual'
+            self.state = ('manual' if self._heard(self._mode_time, now)
+                          else 'manual: no AUTO heartbeat from the base station (is it on a branch with AUTO?)')
             return None
-        return self._drive_auto(now, 'AUTO')
+        if not self._latched and self._may_finish_the_goal(now):
+            if self._linkless_since is None:
+                self._linkless_since = now
+            limit = self.config.linkless_limit_s
+            if limit > 0 and now - self._linkless_since > limit:
+                self.fault = f'the base station has been silent for more than {limit:g} s'
+            else:
+                self._linkless = True
+                command = self._drive_auto(now, 'AUTO without the base station')
+                if not self.fault:
+                    return command
+        # Stopped, and it stays so until the base station is heard: no goal, no AUTO, or AUTO stopped itself.
+        self._latched, self._linkless = True, False
+        self._auto_since = self._motion_since = None  # the fault, if any, stays for goal_manager to see
+        self.state = ('waiting for the base station' if self._estop_time is None
+                      else 'base station not heard: e-stop latched until it is back')
+        return None
+
+    def estop_output(self, now: float) -> bool:
+        """The e-stop for drive_node, every tick: the base station's while it is heard. Without it: released only
+        while AUTO goes on to its goal (output() decides that), latched otherwise."""
+        if self._heard(self._estop_time, now):
+            return bool(self._estop)
+        return not self._linkless
+
+    def _may_finish_the_goal(self, now: float) -> bool:
+        """The base station fell silent while AUTO was on, the e-stop released, and a goal is still running."""
+        return (self._auto is True and self._estop is False and self._goal_active
+                and self._goal_time is not None and now - self._goal_time <= self.config.goal_timeout_s)
 
     def _leave_auto(self) -> None:
         self._auto_since = self._motion_since = None

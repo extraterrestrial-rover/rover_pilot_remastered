@@ -1,17 +1,26 @@
-"""goal_manager's rules (goal_logic): goals only in AUTO, cancel on manual or e-stop, pause and resume on link loss."""
+"""goal_manager's rules (goal_logic): goals only in AUTO, cancelled by manual or the e-stop, finished without the
+base station."""
 from rover_autonomy.goal_logic import CANCEL, SEND, Action, GoalLogic
 
 
 def heard(logic, now, auto=True, estop=False):
+    """The base station's two heartbeats arrive, and the 10 Hz update runs."""
     logic.on_auto(auto, now)
     logic.on_estop(estop, now)
     return later(logic, now)
 
 
 def later(logic, now, fault=''):
-    """update() with drive_mux reporting as it does at 10 Hz ('': AUTO has not stopped itself)."""
+    """The 10 Hz update, with drive_mux reporting as it does ('': AUTO has not stopped itself)."""
     logic.on_fault(fault, now)
     return logic.update(now)
+
+
+def running(now=0.0):
+    logic = GoalLogic()
+    heard(logic, now)
+    assert logic.on_goal('A', now) == [Action(SEND, 'A')] and logic.active
+    return logic
 
 
 def test_goals_are_taken_only_in_auto_with_the_estop_released():
@@ -21,83 +30,83 @@ def test_goals_are_taken_only_in_auto_with_the_estop_released():
     assert logic.on_goal('A', 0.1) == [] and 'not in AUTO' in logic.events[-1]
     heard(logic, 0.2, auto=True, estop=True)
     assert logic.on_goal('A', 0.2) == [] and 'e-stop' in logic.events[-1]
+    assert not logic.active
     heard(logic, 0.3)
-    assert logic.on_goal('A', 0.3) == [Action(SEND, 'A')]
+    assert logic.on_goal('A', 0.3) == [Action(SEND, 'A')] and logic.active
     assert logic.on_goal('B', 0.4) == [Action(SEND, 'B')] and 'replaces' in logic.events[-1]
 
 
-def test_manual_or_estop_cancels_for_good():
-    for change in ({'auto': False}, {'estop': True}):
-        logic = GoalLogic()
-        heard(logic, 0.0)
-        logic.on_goal('A', 0.0)
+def test_manual_or_the_estop_cancels_for_good():
+    for change, reason in (({'auto': False}, 'manual driving'), ({'estop': True}, 'e-stop'),
+                           ({'auto': False, 'estop': True}, 'e-stop')):
+        logic = running()
         assert heard(logic, 0.1, **change) == [Action(CANCEL)]
-        assert logic.goal is None
-        assert heard(logic, 0.2) == []  # back in AUTO later: nothing resumes
+        assert not logic.active and logic.events[-1] == f'goal cancelled: {reason}'
+        assert heard(logic, 0.2) == []  # back in AUTO later: nothing comes back
 
 
-def test_link_loss_pauses_and_the_return_resumes():
-    logic = GoalLogic(link_timeout_s=0.5)
-    heard(logic, 0.0)
-    logic.on_goal('A', 0.0)
+def test_the_goal_goes_on_when_the_base_station_falls_silent():
+    logic = running()
     assert later(logic, 0.4) == []
-    assert later(logic, 0.6) == [Action(CANCEL)] and 'paused' in logic.events[-1]
-    assert later(logic, 5.0) == []  # still lost: nothing more
-    logic.on_result(succeeded=False, cancelled=True)  # Nav2 confirms our cancel: the goal is kept
-    assert heard(logic, 9.0) == [Action(SEND, 'A')] and 'resuming' in logic.events[-1]
-    assert heard(logic, 9.1) == []
+    assert later(logic, 0.6) == [] and logic.active  # heartbeats 0.6 s old: lost, and the goal is not touched
+    assert 'goes on to its goal' in logic.events[-1] and 'kill switch' in logic.events[-1]
+    count = len(logic.events)
+    assert later(logic, 5.0) == [] and len(logic.events) == count  # said once
+    assert heard(logic, 9.0) == [] and logic.active and logic.events[-1] == 'base station back: the goal goes on'
 
 
-def test_after_a_base_station_restart_the_goal_waits_for_auto():
-    logic = GoalLogic()
-    heard(logic, 0.0)
-    logic.on_goal('A', 0.0)
-    later(logic, 1.0)  # paused
-    assert heard(logic, 5.0, auto=False, estop=True) == [] and 'goal kept' in logic.events[-1]  # restarted: e-stopped
-    assert heard(logic, 5.1, auto=False, estop=False) == []  # released, driving manually: still kept
-    assert logic.goal == 'A'
-    assert heard(logic, 6.0, auto=True) == [Action(SEND, 'A')]  # AUTO pressed: on its way again
+def test_reaching_the_goal_without_the_base_station_says_that_the_estop_is_latched():
+    logic = running()
+    later(logic, 1.0)  # lost
+    logic.on_result(succeeded=True)
+    assert not logic.active  # drive_mux latches the e-stop on this
+    assert logic.events[-1].startswith('goal reached') and 'e-stop is latched until it is back' in logic.events[-1]
+    assert later(logic, 2.0) == [] and heard(logic, 3.0) == []
 
 
-def test_an_estop_press_or_a_new_goal_drops_a_paused_goal():
-    logic = GoalLogic()
-    heard(logic, 0.0)
-    logic.on_goal('A', 0.0)
-    later(logic, 1.0)  # paused
-    heard(logic, 5.0, auto=False)  # back in manual
-    assert heard(logic, 5.1, auto=False, estop=True) == [] and logic.goal is None
-    assert 'dropped' in logic.events[-1]
-    assert heard(logic, 6.0) == []  # AUTO later: nothing resumes
-    logic.on_goal('B', 6.0)
-    later(logic, 7.0)  # paused
-    assert heard(logic, 8.0) == [Action(SEND, 'B')]
-    assert logic.on_goal('C', 8.1) == [Action(SEND, 'C')] and logic.goal == 'C'
+def test_what_the_base_station_says_when_it_is_back_goes():
+    # It restarted (e-stopped, manual), or the operator pressed the e-stop or took the sticks during the outage.
+    for change, reason in (({'auto': False, 'estop': True}, 'e-stop'), ({'auto': False}, 'manual driving')):
+        logic = running()
+        later(logic, 1.0)
+        assert heard(logic, 5.0, **change) == [Action(CANCEL)] and logic.events[-1] == f'goal cancelled: {reason}'
+        assert heard(logic, 6.0) == []  # AUTO again later: the old goal does not come back
+
+
+def test_an_estop_heard_alone_is_enough():
+    logic = running()
+    logic.on_estop(True, 1.0)  # the AUTO heartbeat has not arrived (two topics, either order, or one of them lost)
+    assert later(logic, 1.0) == [Action(CANCEL)] and logic.events[-1] == 'goal cancelled: e-stop'
+    logic = running()
+    logic.on_estop(False, 1.0)  # the base station is heard, but says nothing about AUTO any more
+    assert later(logic, 1.0) == [Action(CANCEL)] and logic.events[-1] == 'goal cancelled: manual driving'
 
 
 def test_reaching_the_goal_or_nav2_giving_up_ends_it():
-    logic = GoalLogic()
-    heard(logic, 0.0)
-    logic.on_goal('A', 0.0)
-    logic.on_result(succeeded=True, cancelled=False)
-    assert logic.goal is None and logic.events[-1] == 'goal reached'
+    logic = running()
+    logic.on_result(succeeded=True)
+    assert not logic.active and logic.events[-1] == 'goal reached'
     logic.on_goal('B', 0.1)
-    logic.on_result(succeeded=False, cancelled=False)
-    assert logic.goal is None and 'gave up' in logic.events[-1]
+    logic.on_result(succeeded=False)
+    assert not logic.active and 'gave up' in logic.events[-1]
     assert heard(logic, 0.2) == []  # no automatic retry
     logic.on_goal('C', 0.3)
     logic.on_rejected('Nav2 refused it')
-    assert logic.goal is None and 'refused' in logic.events[-1]
+    assert not logic.active and 'refused' in logic.events[-1]
+    logic.on_result(succeeded=True)  # a late result for a goal that is gone: nothing
+    assert logic.events[-1] != 'goal reached'
 
 
 def test_a_fault_from_drive_mux_cancels_the_goal():
     # AUTO stopped itself (no odometry, no motion): Nav2 must not go on trying, least of all with its spins.
-    logic = GoalLogic()
-    heard(logic, 0.0)
-    logic.on_goal('A', 0.0)
+    logic = running()
     assert later(logic, 0.1) == []
     assert later(logic, 0.2, fault='no odometry from the camera') == [Action(CANCEL)]
-    assert logic.goal is None and logic.events[-1] == 'goal cancelled: no odometry from the camera'
+    assert not logic.active and logic.events[-1] == 'goal cancelled: no odometry from the camera'
     assert later(logic, 0.3, fault='no odometry from the camera') == []  # once
+    logic = running(1.0)
+    later(logic, 2.0)  # the base station is lost; then the camera fails on the way
+    assert later(logic, 3.0, fault='no odometry from the camera') == [Action(CANCEL)]
 
 
 def test_a_silent_drive_mux_cancels_the_goal():
@@ -107,8 +116,7 @@ def test_a_silent_drive_mux_cancels_the_goal():
     assert logic.on_goal('A', 0.0) == [Action(SEND, 'A')]
     assert logic.update(0.1) == [Action(CANCEL)]  # drive_mux was never heard
     assert 'drive_mux is not running' in logic.events[-1]
-    heard(logic, 1.0)
-    logic.on_goal('B', 1.0)
+    logic = running(1.0)
     logic.on_auto(True, 2.2)
     logic.on_estop(False, 2.2)
     assert logic.update(2.2) == [Action(CANCEL)]  # its last report is 1.2 s old

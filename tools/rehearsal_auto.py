@@ -312,6 +312,24 @@ class Rehearsal:
             time.sleep(0.005)
         return None
 
+    def moves(self, seconds: float) -> bool:
+        start = self.rover.pose()
+        time.sleep(seconds)
+        end = self.rover.pose()
+        return math.hypot(end[0] - start[0], end[1] - start[1]) > 0.1 or abs(end[2] - start[2]) > 0.1
+
+    def event_while_driving(self, text: str, timeout: float, since: int) -> tuple[bool, bool]:
+        """(the event came, the ESP32 left DRIVING before it did)."""
+        left_driving = False
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if any(text in event for event in self.events[since:]):
+                return True, left_driving
+            state = self.esp.state()
+            left_driving = left_driving or state is None or state[0] != fake_esp.DRIVING
+            time.sleep(0.02)
+        return False, left_driving
+
     def holds_still(self, seconds: float) -> bool:
         start = self.rover.pose()
         time.sleep(seconds)
@@ -379,6 +397,10 @@ class Rehearsal:
         self.check('nothing on the rover publishes /cmd_vel but the base station (here: the relay)', cmd_vel == ['rehearsal_rover'], str(cmd_vel))
         drive = sorted(info.node_name for info in self.node.get_subscriptions_info_by_topic('/cmd_vel_drive'))
         self.check('drive_node listens to drive_mux (/cmd_vel_drive)', drive == ['drive_node'], str(drive))
+        estop = sorted(info.node_name for info in self.node.get_subscriptions_info_by_topic('/rover/estop_drive'))
+        direct = sorted(info.node_name for info in self.node.get_subscriptions_info_by_topic('/rover/estop'))
+        self.check("drive_node takes its e-stop from drive_mux, which passes the base station's on",
+                   estop == ['drive_node'] and 'drive_mux' in direct and 'drive_node' not in direct, f'{estop}; /rover/estop: {direct}')
         auto = sorted(info.node_name for info in self.node.get_publishers_info_by_topic('/cmd_vel_auto'))
         self.check("Nav2's output reaches the mux through the velocity smoother only", auto == ['velocity_smoother'], str(auto))
 
@@ -411,34 +433,34 @@ class Rehearsal:
         self.check('EKF (odom -> base_footprint) matches the rover', error is not None and error[0] < 0.1,
                    f'{error[0]:.3f} m off: {error[1]}' if error is not None else 'no transform')
 
-        print('\n4. Radio lost in AUTO: stop, then resume the same goal', flush=True)
+        print('\n4. Radio lost while a goal runs: the rover goes on to its goal, then the e-stop latches', flush=True)
         since = len(self.events)
         self.goal(0.0, 3.0)
         time.sleep(4.0)
-        moving = self.esp.state()
         self.radio = False
-        latency = self.wait(lambda s: s[1] == STOPPED, 2.0)
-        self.check('radio lost: the wheels stop', latency is not None and latency < 0.8 and moving is not None and moving[1] != STOPPED,
-                   f'{latency:.2f} s after the radio dropped (was {moving})' if latency is not None else self.where())
-        self.check('the goal is paused', self.event('goal paused', 3.0, since))
-        self.check('the rover stays put while the radio is down', self.holds_still(4.0))
+        self.check('radio lost: the rover goes on', self.event('goes on to its goal', 3.0, since) and self.moves(3.0))
+        reached, left_driving = self.event_while_driving('goal reached', 150.0, since)
+        self.check('goal (0, 3) reached without the base station', reached and self.rover.distance_to(0.0, 3.0) < 0.5)
+        self.check('the ESP32 was never stopped on the way', not left_driving)
+        self.check('at the goal, still no base station: the e-stop is latched',
+                   self.wait(lambda s: s == (fake_esp.ESTOP, STOPPED), 3.0) is not None and self.holds_still(3.0)
+                   and self.event('e-stop is latched until it is back', 1.0, since))
         self.radio = True
-        self.check('radio back: the goal resumes', self.event('resuming', 5.0, since))
-        self.check('goal (0, 3) reached after the outage', self.event('goal reached', 150.0, since) and self.rover.distance_to(0.0, 3.0) < 0.5)
+        self.check('radio back, still in AUTO: enabled again and holding still',
+                   self.wait(lambda s: s == (fake_esp.DRIVING, STOPPED), 3.0) is not None and self.holds_still(2.0))
 
-        print('\n5. Base station restarted in AUTO: the goal waits for Options + Triangle', flush=True)
+        print('\n5. Base station restarted while a goal runs: the rover goes on until the base station is heard again', flush=True)
         since = len(self.events)
-        self.goal(4.0, 3.0)
+        self.goal(9.0, 3.0)  # far enough to be still under way when the base station is back
         time.sleep(4.0)
         self.base_launch.kill()  # the base station laptop crashes
-        self.check('base station gone: the wheels stop', self.wait(lambda s: s[1] == STOPPED, 2.0) is not None)
         self.base_auto = None
-        self.start_base()
-        self.check('restarted base station (e-stopped, manual): the goal is kept', self.event('goal kept', 30.0, since))
-        self.check('the rover waits', self.holds_still(2.0))
-        self.check('Options + Triangle: AUTO again', self.ready_for_auto())
-        self.check('the goal resumes', self.event('resuming', 5.0, since))
-        self.check('goal (4, 3) reached', self.event('goal reached', 150.0, since) and self.rover.distance_to(4.0, 3.0) < 0.5)
+        self.check('base station gone: the rover goes on', self.event('goes on to its goal', 3.0, since) and self.moves(3.0))
+        self.start_base()  # it comes up e-stopped and in manual
+        self.check('restarted base station heard (e-stopped): the goal is cancelled', self.event('goal cancelled: e-stop', 40.0, since))
+        self.check('and the rover stops', self.wait(lambda s: s == (fake_esp.ESTOP, STOPPED), 2.0) is not None and self.holds_still(2.0)
+                   and self.rover.distance_to(9.0, 3.0) > 1.0)
+        self.check('Options + Triangle: AUTO again, and the old goal does not come back', self.ready_for_auto() and self.holds_still(3.0))
 
         print('\n6. E-stop in AUTO cancels the goal', flush=True)
         since = len(self.events)

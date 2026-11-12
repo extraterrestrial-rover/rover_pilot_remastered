@@ -37,8 +37,8 @@
 drive_mux:
   ros__parameters:
     rate_hz: 50.0
-    mode_timeout_s: 0.5          # /rover/auto older than this: the base station is lost, nothing is passed on
-    command_timeout_s: 0.3       # an input older than this is not passed on (drive_node's own timeout)
+    mode_timeout_s: 0.5          # /rover/estop or /rover/auto older than this: the base station is lost
+    command_timeout_s: 0.3       # Nav2's command older than this: zeros
     neutral_hold_s: 0.3          # zeros first whenever AUTO starts (the ESP32 re-arms only on a neutral command)
     # The motors' deadband as a wheel target in rpm: `wheel_test.py --percent P` drives P x max_wheel_rpm / 100.
     # MEASURE on the ground (AUTONOMY.md, "Deadband"). 0.0 = not measured yet: no correction, and the rover may not
@@ -53,6 +53,10 @@ drive_mux:
     no_motion_distance_m: 0.03   # what counts as moving: this far ...
     no_motion_angle_rad: 0.03    # ... or this much turned
     rearm_interval_s: 1.5        # the ESP32 not driving in AUTO (reset, link hiccup): zeros again, at most this often
+    # The base station silent while a goal runs: the rover goes on to its goal, then the e-stop is latched until the
+    # base station is back. Nothing at the base station can stop the rover on that stretch (the kill switch can).
+    goal_timeout_s: 0.5          # /rover/goal_active older than this: no goal is running
+    linkless_limit_s: 0.0        # the longest such stretch, in seconds, before the rover stops anyway (0.0 = no limit)
 
 goal_manager:
   ros__parameters:

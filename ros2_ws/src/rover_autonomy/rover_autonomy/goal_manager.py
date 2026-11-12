@@ -1,8 +1,9 @@
 """Rover-side goal manager: RViz's "2D Goal Pose" (/goal_pose) -> Nav2's navigate_to_pose, only in AUTO.
 
-goal_logic has the rules (AUTO only; manual or e-stop cancels; base station lost: pause, then resume). bt_navigator's
-own /goal_pose subscription is remapped away by the launch file, so this node is the only way a clicked goal reaches
-Nav2. Events are logged and published on /rover/autonomy_events for the base station.
+goal_logic has the rules (AUTO only; manual or the e-stop cancels; with the base station lost the rover goes on to
+its goal and stops there). bt_navigator's own /goal_pose subscription is remapped away by the launch file, so this
+node is the only way a clicked goal reaches Nav2. Events are logged and published on /rover/autonomy_events for the
+base station, and /rover/goal_active tells drive_mux at 10 Hz whether a goal is running.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ class GoalManager(Node):
         self.logic = GoalLogic(param('link_timeout_s', 0.5).value)
         self.nav = ActionClient(self, NavigateToPose, param('action_name', 'navigate_to_pose').value)
         self.events = self.create_publisher(String, param('events_topic', '/rover/autonomy_events').value, 10)
+        self.goal_active = self.create_publisher(Bool, param('goal_active_topic', '/rover/goal_active').value, LATEST_ONLY)
         self.create_subscription(PoseStamped, param('goal_topic', '/goal_pose').value, self.on_goal, 10)
         self.create_subscription(Bool, param('auto_topic', '/rover/auto').value, self.on_auto, LATEST_ONLY)
         self.create_subscription(Bool, param('estop_topic', '/rover/estop').value, self.on_estop, LATEST_ONLY)
@@ -47,9 +49,9 @@ class GoalManager(Node):
         self.run(self.logic.on_goal(msg, time.monotonic()))
 
     # The heartbeats are only recorded here; the 10 Hz update looks at both together. base_teleop sends them as a
-    # pair (Circle: e-stop on and AUTO off), but two topics arrive in either order, and reacting to the first alone
-    # would report an e-stop as "manual driving". The motion itself never waits for this: drive_node and drive_mux
-    # act on the heartbeats at once.
+    # pair (the e-stop button: e-stop on and AUTO off), but two topics arrive in either order, and reacting to the
+    # first alone would report an e-stop as "manual driving". The motion itself never waits for this: drive_mux
+    # passes the e-stop on to drive_node the moment it arrives.
     def on_auto(self, msg: Bool) -> None:
         self.logic.on_auto(msg.data, time.monotonic())
 
@@ -71,6 +73,7 @@ class GoalManager(Node):
         self.report()
 
     def report(self) -> None:
+        self.goal_active.publish(Bool(data=self.logic.active))  # with every update (10 Hz) and every change
         for event in self.logic.events[self.reported:]:
             warn = any(word in event for word in ('ignored', 'lost', 'cancelled', 'dropped', 'gave up'))
             self.get_logger().warn(event) if warn else self.get_logger().info(event)
@@ -124,7 +127,7 @@ class GoalManager(Node):
         if status == GoalStatus.STATUS_CANCELED:  # our own cancels clear self.wanted first: this came from elsewhere
             self.logic.on_rejected('cancelled outside goal_manager')
         else:
-            self.logic.on_result(succeeded=status == GoalStatus.STATUS_SUCCEEDED, cancelled=False)
+            self.logic.on_result(succeeded=status == GoalStatus.STATUS_SUCCEEDED)
         self.report()
 
     def stop(self) -> None:

@@ -35,6 +35,9 @@ def test_rviz_goals_reach_nav2_only_through_goal_manager():
 
 def test_drive_node_listens_to_the_mux():
     assert "SetRemap(src='/cmd_vel', dst='/cmd_vel_drive')" in SOURCE
+    # ... for its e-stop too: the mux passes the base station's on, and holds it released only while a goal is
+    # finished without the base station.
+    assert "SetRemap(src='/rover/estop', dst='/rover/estop_drive')" in SOURCE
 
 
 def test_lifecycle_manager_manages_every_nav2_node():
