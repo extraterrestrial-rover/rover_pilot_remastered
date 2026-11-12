@@ -2,8 +2,11 @@
 
 They start real nodes, release the e-stop and command full speed, against a simulated ESP32. In the ROS domain the
 rover uses, a drive_node that is really running would follow them and the rover would drive. So they run in a ROS
-domain of their own, with ROS traffic kept on this machine, and refuse to start when anything else is already in
-that domain.
+domain of their own, and refuse to start when anything else is already in that domain: discovery reaches the whole
+network, so a rover that happens to use the same domain number is seen, and refused.
+
+Not ROS_LOCALHOST_ONLY: with CycloneDDS it means the loopback without multicast, where a domain holds only about ten
+nodes. The autonomy stack has more, and its nodes then fail to start ("Failed to find a free participant index").
 """
 from __future__ import annotations
 
@@ -16,12 +19,11 @@ REHEARSAL_DOMAIN = 63  # tools/rehearsal.py (--domain overrides it)
 
 def enter(domain: int, environ=None) -> int:
     """Call before rclpy.init() and before starting any ROS process. This process and its children then use ROS
-    domain `domain`, and their ROS traffic stays on this machine."""
+    domain `domain`."""
     if isinstance(domain, bool) or not isinstance(domain, int) or not 0 <= domain <= 101:
         raise ValueError(f'ROS domain {domain!r}: use a whole number from 0 to 101')
     environ = os.environ if environ is None else environ
     environ['ROS_DOMAIN_ID'] = str(domain)
-    environ['ROS_LOCALHOST_ONLY'] = '1'
     return domain
 
 

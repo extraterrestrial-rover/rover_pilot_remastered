@@ -192,6 +192,28 @@ def test_the_double_sigint_from_ros2_launch_still_shuts_down_cleanly():
         fake.stop_event.set()
 
 
+def test_the_sandbox_holds_as_many_nodes_as_the_autonomy_stack(ros_domain):
+    """Sixteen nodes in the sandbox domain all start and find each other (the autonomy stack runs fourteen)."""
+    code = ('import sys, time, rclpy; rclpy.init(); node = rclpy.create_node(sys.argv[1]); time.sleep(12); '
+            'node.destroy_node(); rclpy.shutdown()')
+    nodes = [subprocess.Popen([sys.executable, '-c', code, f'sandbox_node_{index}'], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True) for index in range(16)]
+    rclpy.init()
+    watcher = rclpy.create_node('sandbox_watcher')
+    try:
+        seen = []
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and len(seen) < 16:
+            seen = [name for name in ros_sandbox.foreign_nodes(watcher, settle_s=0.5) if 'sandbox_node_' in name]
+        assert len(seen) == 16, (seen, [node.poll() for node in nodes])
+    finally:
+        watcher.destroy_node()
+        rclpy.shutdown()
+        for node in nodes:
+            node.kill()
+            node.wait(timeout=5)
+
+
 def test_the_tests_run_where_a_rover_in_another_domain_cannot_hear_them(ros_domain):
     """A node started by these tests is in the sandbox domain (and found by the check that guards it), and invisible
     from any other domain, such as the one a real rover uses."""

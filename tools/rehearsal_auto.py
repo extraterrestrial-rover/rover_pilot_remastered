@@ -12,8 +12,8 @@ RViz-style goals, and checks where the rover ends up. Stand-ins, all in this pro
   - RTAB-Map: an identity map -> odom and an empty 30 m x 30 m /map;
   - the radio: the base station runs in its own ROS domain, and this script relays its three topics (/cmd_vel,
     /rover/estop, /rover/auto) to the rover's domain; "radio lost" stops the relay;
-  - both domains are this script's own (61 and 62, --rover-domain / --base-domain), ROS traffic stays on this
-    machine, and it refuses to start if another node is already in either domain: it drives a (simulated) rover;
+  - both domains are this script's own (61 and 62, --rover-domain / --base-domain), and it refuses to start if
+    another node is already in either domain: it drives a (simulated) rover;
   - the PS5: /joy from this script, in the base station's domain.
 
 Needs ROS 2 Humble with Nav2 and robot_localization (AUTONOMY.md, "Install"), this workspace built and sourced:
@@ -540,7 +540,7 @@ def main() -> int:
     parser.add_argument('--base-domain', type=int, default=62, help='ROS_DOMAIN_ID of the base station side (default 62)')
     args = parser.parse_args()
     try:
-        ros_sandbox.enter(args.base_domain)  # keeps ROS traffic on this machine; each side then gets its own domain
+        ros_sandbox.enter(args.base_domain)  # checks both numbers; each side then gets its own domain
         ros_sandbox.enter(args.rover_domain, {})
     except ValueError as error:
         parser.error(str(error))

@@ -216,7 +216,7 @@ python3 tools/rehearsal_auto.py      # about 6 minutes; PASS/FAIL table, exit co
 The rehearsal runs the real launch files, Nav2 included, against the simulated ESP32. It simulates the rover's motion
 with a deadband on each side's motors, publishes it as the ZED's odometry, and puts a post in front of the rover. The
 base station runs in its own ROS domain behind a relay, so the script can cut the "radio". Both domains are its own
-(61, 62), its ROS traffic stays on the machine, and it refuses to start next to another node. It checks:
+(61, 62), and it refuses to start next to another node in either. It checks:
 
 - goals are taken only in AUTO, are fixed in the map when given in a moving frame, and Nav2 goals sent around
   `goal_manager` don't move the rover;

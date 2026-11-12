@@ -8,7 +8,7 @@ joy_node does (20 Hz autorepeat), with the axis and button numbers from config/d
 stops it. Nothing touches real hardware.
 
 It releases the e-stop and drives at full speed, so it never runs in the rover's ROS domain: it uses domain 63
-(--domain), keeps its ROS traffic on this machine, and refuses to start if another node is already in that domain.
+(--domain), and refuses to start if another node is already in that domain.
 
 Needs ROS 2 Humble and this workspace built and sourced, with the RMW you use on the rover:
     source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash

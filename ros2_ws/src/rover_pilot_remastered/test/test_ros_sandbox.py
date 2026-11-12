@@ -6,10 +6,12 @@ import pytest
 from rover_pilot_remastered import ros_sandbox
 
 
-def test_enter_sets_a_private_domain_and_keeps_traffic_on_this_machine():
+def test_enter_sets_a_private_domain():
     environ = {'ROS_DOMAIN_ID': '5', 'OTHER': 'kept'}  # 5: the rover's, from the shell
     assert ros_sandbox.enter(42, environ) == 42
-    assert environ == {'ROS_DOMAIN_ID': '42', 'ROS_LOCALHOST_ONLY': '1', 'OTHER': 'kept'}
+    # Not ROS_LOCALHOST_ONLY: with CycloneDDS a loopback-only domain holds about ten nodes, too few for the autonomy
+    # stack (its nodes failed to start in the AUTO rehearsal).
+    assert environ == {'ROS_DOMAIN_ID': '42', 'OTHER': 'kept'}
 
 
 @pytest.mark.parametrize('bad', [-1, 102, 2.5, True, '7', None])
@@ -22,7 +24,6 @@ def test_enter_refuses_what_is_not_a_ros_domain(bad):
 
 def test_this_test_session_runs_in_the_sandbox(ros_domain):
     assert os.environ['ROS_DOMAIN_ID'] == str(ros_domain)
-    assert os.environ['ROS_LOCALHOST_ONLY'] == '1'
 
 
 def test_other_nodes_are_reported_and_hidden_ones_are_not():

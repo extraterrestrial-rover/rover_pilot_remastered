@@ -236,9 +236,8 @@ python3 tools/rehearsal_auto.py                       # AUTO with the real Nav2,
 ```
 
 The tests and both rehearsals release the e-stop and drive at full speed, so none of them uses your shell's
-`ROS_DOMAIN_ID`: they run in ROS domains of their own (tests 87, rehearsals 63 and 61/62), keep their ROS traffic on
-the laptop, and refuse to start when another node is already in that domain. A rover that is switched on cannot hear
-them. Each run ends with its PASS/FAIL count; exit code 1 on any failure.
+`ROS_DOMAIN_ID`: they run in ROS domains of their own (tests 87, rehearsals 63 and 61/62), and refuse to start when
+another node is already in that domain, also one on another computer. A rover that is switched on cannot hear them. Each run ends with its PASS/FAIL count; exit code 1 on any failure.
 
 Then the camera through ROS. The first start can take minutes while the SDK optimises its depth model:
 
