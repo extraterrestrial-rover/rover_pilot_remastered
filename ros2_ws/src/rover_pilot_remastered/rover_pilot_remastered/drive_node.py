@@ -68,6 +68,9 @@ class DriveNode(Node):
             f'wheel {self.geometry.wheel_diameter_m} m, track '
             f'{self.geometry.track_width_m} m, max {self.geometry.max_linear_speed:.2f} m/s '
             f'({self.geometry.max_wheel_rpm} wheel rpm at full PWM)')
+        if not self.link.interface and not self.link.master_host.startswith('127.'):
+            self.get_logger().warn('interface:= is not set: while the ESP32\'s port is down, the commands follow the default '
+                                   'route out of the radio port. On the rover, launch with interface:=<that port> (LINK.md)')
 
     def on_cmd_vel(self, msg: Twist) -> None:
         self.gate.on_cmd_vel(msg.linear.x, msg.angular.z, time.monotonic())
