@@ -67,6 +67,7 @@ The e-stop starts **latched**. After launching, centre the sticks and press Opti
 | PS5 unplugged (USB) / `joy` node dies | `base_teleop` latches the e-stop | ≤ 0.6 s (0.5 s joystick timeout + one tick) | reconnect, Options with sticks centred |
 | `base_teleop` stopped with Ctrl-C | It sends a final e-stop before exiting | next command (≤ 20 ms) | restart, Options with sticks centred |
 | Base station laptop dies or **radio link lost** | E-stop heartbeat goes stale on the rover; `drive_node` sends the e-stop flag | about 0.5 s | link back, Options with sticks centred |
+| The same **in AUTO while a goal runs** (`visual-odom-serial`) | The rover goes on to its goal and stops there; then the e-stop is latched until the base station is back. Only the kill switch and the rover's own checks stop it on the way (AUTONOMY.md) | at the goal | link back |
 | `drive_node` killed / crashes, rover laptop sleeps | No commands reach the ESP32; firmware timeout | ≤ 0.3 s | restart `drive_node`; the ESP32 waits for centred sticks |
 | Link cable unplugged (USB; Ethernet on `ethernet-udp`) | Same as above | ≤ 0.3 s | replug; the ESP32 waits for centred sticks |
 | ESP32 resets or powers up | Motors off at boot | immediate | the ESP32 waits for centred sticks |
@@ -234,11 +235,11 @@ rover launch at it, then `ros2 launch rover_pilot_remastered base_station.launch
 ```bash
 # Dress rehearsal of the whole bench test: real launch files, simulated ESP32 and PS5, every stop timed (about 1 min)
 python3 tools/rehearsal.py                                          # ROS sourced and the workspace built; exit 1 on any FAIL
-python3 tools/rehearsal_auto.py                                     # AUTO mode with the real Nav2 (needs Nav2 installed; about 5 min)
+python3 tools/rehearsal_auto.py                                     # AUTO mode with the real Nav2 (needs Nav2 installed; about 6 min)
 
 # Test suites
 cd ros2_ws/src/rover_pilot_remastered && python3 -m pytest test   # protocol, kinematics, e-stop logic, end-to-end, ROS integration
-cd ros2_ws/src/rover_autonomy && python3 -m pytest test           # AUTO rules, mux, goal manager, Nav2 parameters, launch remaps
+cd ros2_ws/src/rover_autonomy && python3 -m pytest test           # AUTO rules, mux, goal manager, odometry checks, Nav2 parameters, launch
 cd firmware && pio test -e native                                  # firmware state machine and protocol
 python3 tools/gen_test_vectors.py --check                          # C++ and Python vectors agree
 ```

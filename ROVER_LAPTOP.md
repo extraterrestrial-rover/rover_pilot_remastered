@@ -194,8 +194,12 @@ From the **base station**, once, so it logs in without a password:
 ssh-copy-id <user>@192.168.1.68     # <user>: your login name on the rover laptop
 ```
 
-**Turn Wi-Fi off in the field** (`nmcli radio wifi off`; `on` again at home for updates). Otherwise DDS also talks
-over Wi-Fi, and another 192.168.1.x network there confuses routing.
+**Turn Wi-Fi off in the field** (`nmcli radio wifi off`; `on` again at home for updates). A Wi-Fi network that also
+uses 192.168.1.x confuses routing to the base station, and ROS 2 nodes would announce themselves on Wi-Fi as well.
+
+**Power the radio before you launch.** Without a powered radio the port has no carrier, and NetworkManager takes
+the 192.168.1.68 address off it. ROS 2 nodes started then find only the laptop itself and never see the base
+station, not even when the radio comes up later. If you launched too early: Ctrl-C and launch again.
 
 ## 9. Living closed inside the rover
 
@@ -227,12 +231,14 @@ No hardware is needed for these. Both rehearsals run the real launch files again
 cd ~/rover_pilot_remastered/ros2_ws/src/rover_pilot_remastered && python3 -m pytest -q -p no:launch_testing -p no:launch_ros test
 cd ../rover_autonomy && python3 -m pytest -q -p no:launch_testing -p no:launch_ros test
 cd ~/rover_pilot_remastered
-ROS_DOMAIN_ID=63 python3 tools/rehearsal.py          # the bench test, about 1 minute: 45 checks
-python3 tools/rehearsal_auto.py                       # AUTO with the real Nav2, about 5 minutes: 31 checks
+python3 tools/rehearsal.py                            # the bench test, about 1 minute
+python3 tools/rehearsal_auto.py                       # AUTO with the real Nav2, about 6 minutes
 ```
 
-`ROS_DOMAIN_ID=63` keeps the bench rehearsal off the team's domain, in case the real base station is running.
-`rehearsal_auto.py` picks its own domains (61, 62).
+The tests and both rehearsals release the e-stop and drive at full speed, so none of them uses your shell's
+`ROS_DOMAIN_ID`: they run in ROS domains of their own (tests 87, rehearsals 63 and 61/62), keep their ROS traffic on
+the laptop, and refuse to start when another node is already in that domain. A rover that is switched on cannot hear
+them. Each run ends with its PASS/FAIL count; exit code 1 on any failure.
 
 Then the camera through ROS. The first start can take minutes while the SDK optimises its depth model:
 
@@ -249,7 +255,8 @@ Measure and fill in `ros2_ws/src/rover_autonomy/config/autonomy.yaml` (AUTONOMY.
 - the rover's size;
 - the ZED's mount;
 - the ZED topic names from step 10;
-- the deadband, with `tools/wheel_test.py`, wheels on the ground.
+- the deadband, with `tools/wheel_test.py`, wheels on the ground. It ships as 0.0 (not measured): AUTO then works,
+  but the rover may not move at Nav2's slow commands, and AUTO stops itself after 3 s without motion.
 
 Rebuild afterwards (`cd ~/rover_pilot_remastered/ros2_ws && colcon build --symlink-install`). The base station must
 be on `visual-odom-serial` too, for the Triangle button: `git switch visual-odom-serial` there.
