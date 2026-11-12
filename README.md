@@ -234,9 +234,8 @@ python3 tools/gen_test_vectors.py --check                          # C++ and Pyt
 On a machine with ROS sourced, add `-p no:launch_testing -p no:launch_ros` to pytest if ROS's own pytest plugins complain.
 
 The rehearsal and the ROS tests release the e-stop and drive at full speed. So they never use the `ROS_DOMAIN_ID` of
-your shell: they run in ROS domains of their own (63 and 87; `--domain`, `ROVER_TEST_DOMAIN`), keep their ROS traffic
-on the machine, and refuse to start if another node is already in that domain. A rover that is switched on cannot
-hear them.
+your shell: they run in ROS domains of their own (63 and 87; `--domain`, `ROVER_TEST_DOMAIN`), and refuse to start if
+another node is already in that domain, also one on another computer. A rover that is switched on cannot hear them.
 
 ## Measuring CPU and memory
 
