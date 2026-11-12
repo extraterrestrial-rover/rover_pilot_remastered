@@ -145,12 +145,35 @@ Put them in `config/drive.yaml` (base_teleop section; `invert_*` if a direction 
 
 ### 4. Every terminal on both machines
 
-Add to `~/.bashrc` on the base station **and** the rover (same values everywhere):
+On the base station **and** the rover, once: a CycloneDDS config that keeps ROS data off multicast.
+
+```bash
+cat > ~/cyclonedds.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+  </Domain>
+</CycloneDDS>
+EOF
+```
+
+Why: both laptops reach the radio through a cable, so CycloneDDS takes the network for a wired one and sends a topic
+as multicast once two or more processes read it. The MikroTik relays multicast over the air at its slowest rate and
+without retries. Heartbeats then get lost, and large data (the ZED's point cloud, on `visual-odom-serial`, is about
+150 Mbit/s that way) fills the link until the two radios lose each other. With `spdp`, multicast is used only to
+find the other machine; all data goes unicast, and data between nodes on the same laptop never leaves it. Both launch
+files print a warning when this is missing.
+
+Then add to `~/.bashrc` on the base station **and** the rover (same values everywhere):
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/rover_pilot_remastered/ros2_ws/install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
 export ROS_DOMAIN_ID=<your team's domain id>
 ```
 
