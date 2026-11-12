@@ -12,6 +12,8 @@ away from RViz's topic, so only goal_manager starts goals, and only in AUTO.
 """
 from __future__ import annotations
 
+import atexit
+import contextlib
 import os
 import tempfile
 from pathlib import Path
@@ -40,6 +42,11 @@ NAV2_NODES = (  # (package, executable, remappings), all managed by lifecycle_ma
 )
 
 
+def remove(path: str) -> None:
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+
+
 def flag(context, name: str) -> bool:
     value = LaunchConfiguration(name).perform(context).strip().lower()
     if value not in ('true', 'false'):
@@ -66,6 +73,7 @@ def launch_setup(context):
     handle, nav2_file = tempfile.mkstemp(prefix='rover_autonomy_nav2_', suffix='.yaml')
     os.close(handle)
     stack_config.write_yaml(nav2, nav2_file)
+    atexit.register(remove, nav2_file)  # one file per run, gone with the launch
     actions = [LogInfo(msg=f'AUTO: up to {speed:g} m/s and {turn_rate:g} rad/s; Nav2 parameters in {nav2_file}')]
 
     if flag(context, 'zed'):

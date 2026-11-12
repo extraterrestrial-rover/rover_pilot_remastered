@@ -1,4 +1,4 @@
-# The link to the drive ESP32: USB serial (`main`)
+# The link to the drive ESP32: USB serial (`main`, `visual-odom-serial`)
 
 On this branch the rover laptop reaches the drive ESP32 through the ESP32's USB port, which also powers it. The
 packets (README, "Protocol") travel as one byte stream: COBS-encoded, each ending in `0x00`, 115200 8N1. The other
@@ -8,7 +8,8 @@ branch, `ethernet-udp`, carries the same packets over a W5500 Ethernet module in
 
 - Link: USB serial, `/dev/rover-drive` (udev rule) at 115200 baud
 - Firmware: fw 2.0.2. Flash it: `cd firmware && pio run -e esp32doit-devkit-v1 -t upload`
-- Rover: `ros2 launch rover_pilot_remastered rover.launch.py` (add `port:=/dev/ttyUSB0` without the udev rule)
+- Rover: `ros2 launch rover_pilot_remastered rover.launch.py` (add `port:=/dev/ttyUSB0` without the udev rule); with
+  autonomy (`visual-odom-serial`): `ros2 launch rover_autonomy rover_autonomy.launch.py`, same `port:=` (AUTONOMY.md)
 
 ## Rover laptop
 
