@@ -141,6 +141,24 @@ cd ros2_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-instal
 cd ~/rover_pilot_remastered && tools/install_hooks.sh       # rebuilds by itself after every pull and branch switch
 ```
 
+A CycloneDDS config that keeps ROS data off multicast. Without it, starting the autonomy stack makes the two MikroTik
+radios lose each other: CycloneDDS sees a wired port, sends the ZED's point cloud as multicast (both costmaps read
+it), and the radio relays that over the air at its slowest rate (README, setup step 4). The base station needs the
+same file.
+
+```bash
+cat > ~/cyclonedds.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+  </Domain>
+</CycloneDDS>
+EOF
+```
+
 Every terminal needs the same environment. Append it to `~/.bashrc`, with **your team's domain ID, the same as the
 base station's**:
 
@@ -151,6 +169,7 @@ source ~/zed_ws/install/local_setup.bash
 source ~/rover_pilot_remastered/ros2_ws/install/local_setup.bash
 export PATH=/usr/local/cuda/bin:$PATH
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
 export ROS_DOMAIN_ID=0        # CHANGE: the base station's number
 EOF
 source ~/.bashrc
@@ -296,6 +315,7 @@ A launch started outside tmux dies with the SSH session.
 | ZED wrapper build: CUDA not found, or `Specify CUDA_TOOLKIT_ROOT_DIR` | no `/usr/local/cuda` link: step 3, "Check CUDA" |
 | ZED not found, or `CAMERA STREAM FAILED TO START` | not on a USB 3 port, a hub in between, or the cable; `lsusb \| grep -i 2b03` |
 | The base station sees no rover topics | same `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` on both; Wi-Fi off; `ping` works; neither sets `ROS_LOCALHOST_ONLY=1` |
+| The radios lose each other when the autonomy stack starts; heartbeats come and go ("base station not heard") | ROS data goes out as multicast: `~/cyclonedds.xml` with `AllowMulticast` `spdp` and `CYCLONEDDS_URI` on **both** machines (step 6); the launch warns when it is missing |
 | The launch ended when SSH dropped | it ran outside tmux: always `tmux new -A -s rover` first |
 | The laptop went to sleep in the rover | step 9: check `grep HandleLidSwitch /etc/systemd/logind.conf` and that the masks are in place |
 | ZED wrapper build killed | not enough memory: `colcon build … --parallel-workers 1` |

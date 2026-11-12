@@ -262,6 +262,9 @@ in.
   from the odometry.
 - RViz over the radio: the costmaps and the map are a few hundred kB/s. The ZED point cloud display is off by default
   for this reason.
+- **Multicast must stay off the radio** (README, setup step 4: `AllowMulticast` `spdp` on both machines). Otherwise
+  CycloneDDS sends the ZED's point cloud as multicast, about 150 Mbit/s, and the two radios lose each other as soon
+  as the stack starts. The launch prints a warning when the setting is missing.
 - Don't use the Nav2 RViz panel or another action client: it sends goals around `goal_manager`, which the mux
   ignores, so they do nothing (Nav2 still plans them).
 - The costmaps clear what has gone with a second pass over the ZED's point cloud (`zed_ground`). It doubles that
