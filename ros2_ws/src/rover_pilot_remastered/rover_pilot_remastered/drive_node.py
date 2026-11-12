@@ -163,7 +163,8 @@ class DriveNode(Node):
             entry.level, entry.message = DiagnosticStatus.WARN, decision.reason or status.state_name.lower()
         values = {'gate': decision.reason or 'driving', 'commands_sent': self.sent, 'link': f'udp {self.target}',
                   'link_rx_good': self.link.decoder.good, 'link_rx_bad': self.link.bad,
-                  'link_from_others': self.link.foreign, 'link_send_errors': self.link.send_errors}
+                  'link_from_others': self.link.foreign, 'link_send_errors': self.link.send_errors,
+                  'link_receive_errors': self.link.receive_errors}
         if self.link.interface:
             carrier = self.link.carrier()
             values['interface'] = (f'{self.link.interface}: ' + ('up' if carrier else 'no carrier') +

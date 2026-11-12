@@ -23,6 +23,7 @@ DEFAULT_MASTER = ('192.168.77.2', 47700)
 DEFAULT_LOCAL_PORT = 47701
 IP_UNICAST_IF = getattr(socket, 'IP_UNICAST_IF', 50)  # Linux <linux/in.h>; not every Python exports it
 CARRIER_CHECK_S = 0.5
+MAX_DATAGRAMS_PER_CALL = 64  # the ESP32 sends 10 a second; more than this in one call is a flood or a failing socket
 
 
 class UdpLink:
@@ -35,6 +36,7 @@ class UdpLink:
         self.foreign = 0       # datagrams from any other address: dropped
         self.tails = 0         # cut-off packets at the end of a datagram: dropped
         self.send_errors = 0   # sends the OS refused (no route, port down, buffer full)
+        self.receive_errors = 0  # receives the OS failed (an ICMP error for an earlier send, the port going down)
         self.pin_error: str | None = None
         self._sock: socket.socket | None = None
         self._master_ip: str | None = None
@@ -88,14 +90,18 @@ class UdpLink:
             return False
 
     def receive(self) -> list[protocol.Packet]:
-        """Every packet that has arrived since the last call."""
+        """The packets that have arrived since the last call. One call reads at most MAX_DATAGRAMS_PER_CALL
+        datagrams, so neither a flood nor a socket that keeps failing can hold up the caller's 50 Hz loop."""
         packets: list[protocol.Packet] = []
-        while self._sock is not None:
+        for _ in range(MAX_DATAGRAMS_PER_CALL):
+            if self._sock is None:
+                break
             try:
                 data, (host, _port) = self._sock.recvfrom(2048)
             except (BlockingIOError, InterruptedError):
                 break
-            except OSError:  # an ICMP error reported for an earlier send: nothing to read
+            except OSError:  # usually an ICMP error reported for an earlier send: nothing to read
+                self.receive_errors += 1
                 continue
             if host != self._master_ip:
                 self.foreign += 1

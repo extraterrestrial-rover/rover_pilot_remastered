@@ -112,3 +112,36 @@ def test_sends_are_pinned_to_the_named_interface_on_linux(esp):
         assert esp.recvfrom(2048)[0] == COMMAND  # the loopback is the pinned interface here
     finally:
         link.close()
+
+
+class Socket:
+    """Stands in for the UDP socket: every recvfrom() gives `answer`, or raises it."""
+
+    def __init__(self, answer):
+        self.answer, self.calls = answer, 0
+
+    def recvfrom(self, _size):
+        self.calls += 1
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+    def close(self):
+        pass
+
+
+def test_a_socket_that_keeps_failing_cannot_hang_the_caller():
+    link = UdpLink('127.0.0.1', 47700, local_port=0)
+    link._sock, link._master_ip = Socket(OSError(errno.ENETDOWN, 'Network is down')), '127.0.0.1'
+    assert link.receive() == []  # used to loop for ever: drive_node's 50 Hz tick never returned
+    assert link.receive_errors == link._sock.calls > 0
+    link._sock = Socket(BlockingIOError())
+    assert link.receive() == [] and link._sock.calls == 1  # the normal case: nothing waiting, one call
+
+
+def test_a_flood_of_datagrams_is_read_in_bounded_portions():
+    link = UdpLink('127.0.0.1', 47700, local_port=0)
+    link._sock, link._master_ip = Socket((STATUS, ('127.0.0.1', 47700))), '127.0.0.1'
+    first = link.receive()
+    assert 0 < len(first) == link._sock.calls  # one packet per datagram, and it came back
+    assert len(link.receive()) == len(first)  # the rest is read by the next calls
