@@ -115,12 +115,15 @@ def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any
         'publish_tf': True,  # map -> odom
         'Reg/Force3DoF': 'true',  # a ground rover: x, y, yaw
         'RGBD/NeighborLinkRefining': 'true',
-        'Grid/FromDepth': 'true',
+        'Grid/Sensor': '1',  # the grid from the depth image (Grid/FromDepth before 0.21; the old name only warns)
         'Grid/RangeMax': f'{settings["obstacle_range_m"] + 2.0:g}',
         'Grid/MinGroundHeight': '-0.5',
         'Grid/MaxGroundHeight': f'{settings["min_obstacle_height_m"]:g}',
         'Grid/MaxObstacleHeight': f'{settings["rover_height_m"]:g}',
         'Grid/RayTracing': 'true',
+        # The map is at least this wide (unknown space around what has been seen), so Nav2 can plan to a goal the
+        # rover has not mapped yet; its global costmap is the size of this map.
+        'GridGlobal/MinSize': '40',
         'Vis/MaxFeatures': '600',
     }
 
