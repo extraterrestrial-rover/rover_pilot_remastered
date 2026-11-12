@@ -17,7 +17,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 
-from rover_autonomy.mux_logic import DriveMux, MuxConfig
+from rover_autonomy.mux_logic import DriveMux, MuxConfig, checked_deadband
 from rover_pilot_remastered.kinematics import DriveGeometry
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -28,16 +28,27 @@ class DriveMuxNode(Node):
         super().__init__('drive_mux')
         param = self.declare_parameter
         defaults = MuxConfig()
+        geometry = DriveGeometry(param('wheel_diameter_m', 0.28).value, param('track_width_m', 0.84).value,
+                                 param('max_wheel_rpm', 94.7).value, param('turn_track_factor', 1.0).value)
+        # A wrong deadband (a percentage or a PWM value typed as rpm) would turn every AUTO command into nearly full
+        # speed: such settings are refused here, and AUTO runs without the correction.
+        straight, spin, problem = checked_deadband(param('min_wheel_rpm_straight', defaults.min_wheel_rpm_straight).value,
+                                                   param('min_wheel_rpm_spin', defaults.min_wheel_rpm_spin).value,
+                                                   geometry.max_wheel_rpm)
+        if problem:
+            self.get_logger().error(f'deadband settings ignored, AUTO runs without the correction: {problem}')
+        elif straight == 0.0 and spin == 0.0:
+            self.get_logger().warn("the motors' deadband is not set (0.0): in AUTO the rover may not move or turn at Nav2's "
+                                   'slow commands. Measure it and set min_wheel_rpm_straight / min_wheel_rpm_spin '
+                                   '(AUTONOMY.md, "Deadband")')
         config = MuxConfig(
             mode_timeout_s=param('mode_timeout_s', defaults.mode_timeout_s).value,
             command_timeout_s=param('command_timeout_s', defaults.command_timeout_s).value,
             neutral_hold_s=param('neutral_hold_s', defaults.neutral_hold_s).value,
-            min_wheel_rpm_straight=param('min_wheel_rpm_straight', defaults.min_wheel_rpm_straight).value,
-            min_wheel_rpm_spin=param('min_wheel_rpm_spin', defaults.min_wheel_rpm_spin).value,
+            min_wheel_rpm_straight=straight,
+            min_wheel_rpm_spin=spin,
             stop_below_rpm=param('stop_below_rpm', defaults.stop_below_rpm).value,
         )
-        geometry = DriveGeometry(param('wheel_diameter_m', 0.28).value, param('track_width_m', 0.84).value,
-                                 param('max_wheel_rpm', 94.7).value, param('turn_track_factor', 1.0).value)
         self.mux = DriveMux(config, geometry)
         self.output = self.create_publisher(Twist, param('output_topic', '/cmd_vel_drive').value, LATEST_ONLY)
         self.create_subscription(Twist, param('manual_topic', '/cmd_vel').value, self.on_manual, LATEST_ONLY)

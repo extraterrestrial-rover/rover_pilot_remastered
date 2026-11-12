@@ -40,9 +40,11 @@ drive_mux:
     command_timeout_s: 0.3       # an input older than this is not passed on (drive_node's own timeout)
     neutral_hold_s: 0.3          # zeros first whenever AUTO starts (the ESP32 re-arms only on a neutral command)
     # The motors' deadband as a wheel target in rpm: `wheel_test.py --percent P` drives P x max_wheel_rpm / 100.
-    # MEASURE on the ground (AUTONOMY.md, "Deadband"): placeholders. 0.0 turns the correction off.
-    min_wheel_rpm_straight: 20.0 # the target where the rover just starts to roll straight ahead
-    min_wheel_rpm_spin: 60.0     # the target where it just starts to turn in place (skid steer needs much more)
+    # MEASURE on the ground (AUTONOMY.md, "Deadband"). 0.0 = not measured yet: no correction, and the rover may not
+    # move or turn at Nav2's slow commands. Too high is worse than too low: the rover then drives and turns faster
+    # than Nav2 asked. Above 80 % of max_wheel_rpm is refused.
+    min_wheel_rpm_straight: 0.0  # the target where the rover just starts to roll straight ahead (expect about 15 to 25)
+    min_wheel_rpm_spin: 0.0      # the target where it just starts to turn in place (skid steer needs much more)
     stop_below_rpm: 0.5          # slower commands are noise: a stop
 
 goal_manager:

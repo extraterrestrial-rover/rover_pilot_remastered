@@ -5,8 +5,9 @@ Runs `ros2 launch rover_autonomy rover_autonomy.launch.py zed:=false slam:=false
 goal_manager, drive_node) and `base_station.launch.py rviz:=false` (base_teleop), presses the PS5's buttons, sends
 RViz-style goals, and checks where the rover ends up. Stand-ins, all in this process:
   - the ESP32: fake_esp.Simulator on this branch's link;
-  - the rover's motion: the ESP32's PWM integrated with a motor deadband (the drive_mux values from autonomy.yaml),
-    published as the ZED's odometry (the camera's pose, as the ZED wrapper reports it);
+  - the rover's motion: the ESP32's PWM integrated with a deadband on each side's motors, a little below the one
+    the rehearsal's autonomy settings give drive_mux (as a measured value would be), published as the ZED's
+    odometry (the camera's pose, as the ZED wrapper reports it);
   - the ZED's point cloud: a post at (2.5, 0) in the map, seen from the camera up to 3 m;
   - RTAB-Map: an identity map -> odom and an empty 30 m x 30 m /map;
   - the radio: the base station runs in its own ROS domain, and this script relays its three topics (/cmd_vel,
@@ -56,12 +57,16 @@ from rover_pilot_remastered.kinematics import DriveGeometry  # noqa: E402
 
 PILOT = SRC / 'rover_pilot_remastered' / 'config'
 AUTONOMY = yaml.safe_load((SRC / 'rover_autonomy' / 'config' / 'autonomy.yaml').read_text())
-SETTINGS, MUX = AUTONOMY['/**']['ros__parameters'], AUTONOMY['drive_mux']['ros__parameters']
+SETTINGS = AUTONOMY['/**']['ros__parameters']
 TELEOP = yaml.safe_load((PILOT / 'drive.yaml').read_text())['base_teleop']['ros__parameters']
 CIRCLE, OPTIONS, TRIANGLE = TELEOP['estop_button'], TELEOP['release_button'], TELEOP['auto_button']
 STOPPED = (0, 0, 0, 0)
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
 POST, POST_RADIUS = (2.5, 0.0), 0.25  # the obstacle, in the map frame
+# The deadband (straight, on the spot) in wheel rpm: what the rehearsal's settings tell drive_mux, and what the
+# simulated motors really have. autonomy.yaml itself ships 0.0 (not measured), which would leave the correction untested.
+CONFIGURED_DEADBAND = (20.0, 60.0)
+TRUE_DEADBAND = (18.0, 54.0)
 
 
 def geometry_for(wheels: str) -> DriveGeometry:
@@ -90,16 +95,19 @@ class Rover:
         pwm = state[1]
         top = self.geometry.max_wheel_rpm
         left, right = ((pwm[0] + pwm[2]) / 2 / 255 * top, (pwm[1] + pwm[3]) / 2 / 255 * top)
-        fastest = max(abs(left), abs(right))
-        if fastest == 0.0:
+        if left == 0.0 and right == 0.0:
             return
-        spin_share = abs(right - left) / 2 / (abs(left + right) / 2 + abs(right - left) / 2)
-        deadband = MUX['min_wheel_rpm_straight'] + (MUX['min_wheel_rpm_spin'] - MUX['min_wheel_rpm_straight']) * spin_share
-        if fastest <= deadband:
-            return  # the motors hum, the rover stays put
-        scale = (fastest - deadband) / (top - deadband) * top / fastest
+        # Each side's motors turn only above their deadband, then about linearly up to full speed. Turning on the
+        # spot scrubs the tyres, so the deadband is higher the more of the motion is turning.
+        spin_share = abs(right - left) / (abs(left + right) + abs(right - left))
+        deadband = TRUE_DEADBAND[0] + (TRUE_DEADBAND[1] - TRUE_DEADBAND[0]) * spin_share
+
+        def turns(target: float) -> float:
+            if abs(target) <= deadband:
+                return 0.0  # the motor hums, the wheel stays put
+            return math.copysign((abs(target) - deadband) / (top - deadband) * top, target)
         metres_per_rpm = math.pi * self.geometry.wheel_diameter_m / 60.0
-        left, right = left * scale * metres_per_rpm, right * scale * metres_per_rpm
+        left, right = turns(left) * metres_per_rpm, turns(right) * metres_per_rpm
         speed = (left + right) / 2.0
         turn = (right - left) / (self.geometry.track_width_m * self.geometry.turn_track_factor)
         with self.lock:
@@ -188,6 +196,11 @@ class Rehearsal:
         self.pressed: set[int] = set()
         self.rover_launch: Launch | None = None
         self.base_launch: Launch | None = None
+        settings = yaml.safe_load((SRC / 'rover_autonomy' / 'config' / 'autonomy.yaml').read_text())
+        mux = settings['drive_mux']['ros__parameters']
+        mux['min_wheel_rpm_straight'], mux['min_wheel_rpm_spin'] = CONFIGURED_DEADBAND
+        self.settings_file = logs / 'autonomy.yaml'
+        self.settings_file.write_text(yaml.safe_dump(settings, sort_keys=False))
 
         self.rover_context, self.base_context = rclpy.Context(), rclpy.Context()
         rclpy.init(context=self.rover_context, domain_id=rover_domain)
@@ -335,7 +348,8 @@ class Rehearsal:
 
     def start_rover(self) -> None:
         self.rover_launch = Launch('rover', self.logs, self.rover_domain, 'rover_autonomy', 'rover_autonomy.launch.py',
-                                   'zed:=false', 'slam:=false', f'wheels:={self.wheels}', *self.esp.launch_arguments)
+                                   'zed:=false', 'slam:=false', f'wheels:={self.wheels}', f'settings:={self.settings_file}',
+                                   *self.esp.launch_arguments)
 
     def start_base(self) -> None:
         self.base_launch = Launch('base_station', self.logs, self.base_domain, 'rover_autonomy', 'base_station.launch.py',

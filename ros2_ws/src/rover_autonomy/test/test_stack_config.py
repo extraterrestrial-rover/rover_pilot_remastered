@@ -108,3 +108,10 @@ def test_drive_mux_settings_match_its_config():
     mux = AUTONOMY['drive_mux']['ros__parameters']
     assert set(mux) - {'rate_hz'} == set(MuxConfig.__dataclass_fields__)
     assert all(isinstance(value, float) for value in mux.values())  # typed ROS parameters: decimal points
+
+
+def test_the_deadband_is_off_until_it_is_measured():
+    """A guessed deadband above the real one makes the rover drive and turn faster than Nav2 asked (the first version
+    shipped 20 and 60 rpm as placeholders: a 0.3 rad/s turn went out at 67 % PWM)."""
+    mux = AUTONOMY['drive_mux']['ros__parameters']
+    assert (mux['min_wheel_rpm_straight'], mux['min_wheel_rpm_spin']) == (0.0, 0.0)

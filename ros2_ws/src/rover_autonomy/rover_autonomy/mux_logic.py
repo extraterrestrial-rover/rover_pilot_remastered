@@ -4,7 +4,7 @@ The base station's AUTO heartbeat (/rover/auto) decides:
   - MANUAL: the sticks' /cmd_vel is passed through unchanged, as when drive_node listens to /cmd_vel directly;
   - AUTO: Nav2's command, after a short run of zeros whenever AUTO (re)starts, because the ESP32 drives again after
     any stop only once it has seen a neutral command; then each command is corrected for the motors' deadband (an
-    open-loop wheel turns only above some PWM), so Nav2's slow commands still move this skid-steer rover;
+    open-loop wheel turns only above some PWM), per side, so Nav2's slow commands still move this skid-steer rover;
   - heartbeat stale (base station or radio lost): nothing, so drive_node's own e-stop heartbeat check stops the rover.
 An input older than command_timeout_s is never passed on: drive_node then stops the wheels as usual.
 """
@@ -27,28 +27,60 @@ class MuxConfig:
     stop_below_rpm: float = 0.5   # commands slower than this are noise: a stop
 
 
+MAX_DEADBAND_SHARE = 0.8  # a deadband above this share of max_wheel_rpm is a unit mistake, not a measurement
+
+
+def checked_deadband(straight_rpm: float, spin_rpm: float, max_wheel_rpm: float) -> tuple[float, float, str]:
+    """The deadband settings if they are usable, else (0.0, 0.0) and why. A deadband is a wheel target in rpm between
+    0 and MAX_DEADBAND_SHARE of max_wheel_rpm: above that it is a unit mistake (a percentage or a PWM value typed as
+    rpm), and the correction would turn every command into nearly full speed."""
+    for name, value in (('min_wheel_rpm_straight', straight_rpm), ('min_wheel_rpm_spin', spin_rpm)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return 0.0, 0.0, f'{name} is {value!r}, not a number'
+        if not 0.0 <= value <= MAX_DEADBAND_SHARE * max_wheel_rpm:
+            return 0.0, 0.0, (f'{name} is {value:g} rpm: it must be between 0 and {MAX_DEADBAND_SHARE * max_wheel_rpm:.1f} '
+                              f'({MAX_DEADBAND_SHARE:.0%} of max_wheel_rpm {max_wheel_rpm:g}); it is a wheel target in rpm, '
+                              'wheel_test percent x max_wheel_rpm / 100')
+    return float(straight_rpm), float(spin_rpm), ''
+
+
 def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometry, config: MuxConfig) -> tuple[float, float]:
-    """Map Nav2's command onto the speeds the motors really have: the fastest wheel's target f becomes
-    minimum + (max - minimum) * f / max, where minimum is the deadband for this mix of rolling and turning. Full speed
-    stays full speed, slow commands become slow but real motion, and direction and turning radius stay as Nav2 asked.
+    """Nav2's command with each side's wheel target lifted over the motors' deadband.
+
+    An open-loop wheel turns only above some target d, and from there about linearly up to full speed. So each side's
+    target t becomes d + (max - d) * |t| / max, with its sign: the side then really turns at about t. Full speed stays
+    full speed, and a side that should stand still stays at zero. d depends on the manoeuvre: turning on the spot
+    scrubs the tyres and needs more than rolling straight, so it is blended between the two measured values by how
+    much of the command is turning. The result is given back as a twist, which drive_node turns into exactly these
+    wheel targets.
     """
     left, right, _, _ = twist_to_wheel_rpm(linear_x, angular_z, geometry)
-    fastest = max(abs(left), abs(right))
-    if fastest < config.stop_below_rpm:
-        return 0.0, 0.0
-    turning = abs(angular_z) * geometry.track_width_m * geometry.turn_track_factor / 2.0
-    spin_share = turning / (abs(linear_x) + turning)  # 0 straight ahead, 1 in place
-    minimum = config.min_wheel_rpm_straight + (config.min_wheel_rpm_spin - config.min_wheel_rpm_straight) * spin_share
-    if minimum <= 0.0:
-        return linear_x, angular_z
+    threshold = max(config.stop_below_rpm, 0.0)
+    if max(abs(left), abs(right)) <= threshold:
+        return 0.0, 0.0  # noise, or exactly zero
+    half_track = geometry.track_width_m * geometry.turn_track_factor / 2.0
+    turning = abs(angular_z) * half_track
+    spin_share = turning / (abs(linear_x) + turning)  # 0 straight ahead, 1 on the spot; the sum is above zero here
+    deadband = config.min_wheel_rpm_straight + (config.min_wheel_rpm_spin - config.min_wheel_rpm_straight) * spin_share
     top = geometry.max_wheel_rpm
-    target = min(top, minimum + (top - minimum) * fastest / top)
-    scale = target / fastest
-    return linear_x * scale, angular_z * scale
+    if not 0.0 < deadband < top:
+        return linear_x, angular_z  # no correction (0), or unusable settings: pass Nav2's command as it is
+
+    def lifted(target: float) -> float:
+        if abs(target) <= threshold:
+            return 0.0
+        return math.copysign(deadband + (top - deadband) * abs(target) / top, target)
+
+    left, right = lifted(left), lifted(right)
+    metres_per_rpm = math.pi * geometry.wheel_diameter_m / 60.0
+    return (left + right) / 2.0 * metres_per_rpm, (right - left) / (2.0 * half_track) * metres_per_rpm
 
 
 class DriveMux:
     def __init__(self, config: MuxConfig, geometry: DriveGeometry) -> None:
+        problem = checked_deadband(config.min_wheel_rpm_straight, config.min_wheel_rpm_spin, geometry.max_wheel_rpm)[2]
+        if problem:
+            raise ValueError(problem)  # drive_mux checks first and runs without the correction instead
         self.config, self.geometry = config, geometry
         self._manual: tuple[float, float] | None = None
         self._manual_time = 0.0
