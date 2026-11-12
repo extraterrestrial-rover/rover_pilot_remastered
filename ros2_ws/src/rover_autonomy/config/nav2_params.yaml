@@ -111,8 +111,10 @@ controller_server:
       trans_stopped_velocity: 0.25
       short_circuit_trajectory_evaluation: true
       stateful: true
-      critics: [RotateToGoal, Oscillation, BaseObstacle, GoalAlign, PathAlign, PathDist, GoalDist]
-      BaseObstacle.scale: 0.02
+      # ObstacleFootprint checks the whole outline along each trajectory; BaseObstacle checks only the cell under the
+      # rover's centre, so a corner could clip an obstacle.
+      critics: [RotateToGoal, Oscillation, ObstacleFootprint, GoalAlign, PathAlign, PathDist, GoalDist]
+      ObstacleFootprint.scale: 0.02
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.1
       GoalAlign.scale: 24.0
@@ -140,7 +142,10 @@ local_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        observation_sources: zed
+        # zed marks obstacles. zed_ground only clears: rays to every point the camera sees, the ground included, so
+        # what has gone (a person who walked away) is cleared in open ground too; zed alone clears only in front of
+        # other obstacles.
+        observation_sources: zed zed_ground
         zed:
           topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
           data_type: PointCloud2
@@ -150,6 +155,15 @@ local_costmap:
           max_obstacle_height: 0.8   # from autonomy.yaml
           obstacle_max_range: 3.0    # from autonomy.yaml
           obstacle_min_range: 0.0
+          raytrace_max_range: 3.5    # from autonomy.yaml
+          raytrace_min_range: 0.0
+        zed_ground:
+          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+          data_type: PointCloud2
+          marking: false
+          clearing: true
+          min_obstacle_height: -1.0  # the ground and anything above it
+          max_obstacle_height: 0.8   # from autonomy.yaml
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
       inflation_layer:
@@ -176,7 +190,10 @@ global_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        observation_sources: zed
+        # zed marks obstacles. zed_ground only clears: rays to every point the camera sees, the ground included, so
+        # what has gone (a person who walked away) is cleared in open ground too; zed alone clears only in front of
+        # other obstacles.
+        observation_sources: zed zed_ground
         zed:
           topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
           data_type: PointCloud2
@@ -186,6 +203,15 @@ global_costmap:
           max_obstacle_height: 0.8   # from autonomy.yaml
           obstacle_max_range: 3.0    # from autonomy.yaml
           obstacle_min_range: 0.0
+          raytrace_max_range: 3.5    # from autonomy.yaml
+          raytrace_min_range: 0.0
+        zed_ground:
+          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+          data_type: PointCloud2
+          marking: false
+          clearing: true
+          min_obstacle_height: -1.0  # the ground and anything above it
+          max_obstacle_height: 0.8   # from autonomy.yaml
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
       inflation_layer:

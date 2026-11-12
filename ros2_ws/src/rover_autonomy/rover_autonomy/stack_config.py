@@ -82,12 +82,17 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
         costmap_params = params[costmap][costmap]['ros__parameters']
         costmap_params['footprint'] = outline
         costmap_params['inflation_layer']['inflation_radius'] = settings['inflation_radius_m']
-        source = costmap_params['obstacle_layer']['zed']
+        layer = costmap_params['obstacle_layer']
+        source = layer['zed']
         source['topic'] = settings['zed_cloud_topic']
         source['min_obstacle_height'] = settings['min_obstacle_height_m']
         source['max_obstacle_height'] = settings['rover_height_m']
         source['obstacle_max_range'] = settings['obstacle_range_m']
         source['raytrace_max_range'] = settings['obstacle_range_m'] + 0.5
+        ground = layer['zed_ground']  # clearing only, through the ground points as well
+        ground['topic'] = settings['zed_cloud_topic']
+        ground['max_obstacle_height'] = settings['rover_height_m']
+        ground['raytrace_max_range'] = settings['obstacle_range_m'] + 0.5
     return params
 
 

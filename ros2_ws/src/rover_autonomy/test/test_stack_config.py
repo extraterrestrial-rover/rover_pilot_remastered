@@ -45,6 +45,24 @@ def test_the_outline_and_the_zed_reach_both_costmaps():
         assert costmap['robot_base_frame'] == 'base_footprint'
 
 
+def test_obstacles_that_have_gone_are_cleared_in_open_ground():
+    """Clearing only along rays to obstacle points left anything that had gone in open ground (nothing behind it)
+    in the costmap for good. A second source clears along rays to every point, the ground included, and never marks."""
+    params = build(rover_height_m=0.7, zed_cloud_topic='/cloud', obstacle_range_m=2.5)
+    for name in ('local_costmap', 'global_costmap'):
+        layer = params[name][name]['ros__parameters']['obstacle_layer']
+        assert layer['observation_sources'].split() == ['zed', 'zed_ground']
+        ground = layer['zed_ground']
+        assert ground['topic'] == '/cloud' and ground['marking'] is False and ground['clearing'] is True
+        assert ground['min_obstacle_height'] < 0.0 and ground['max_obstacle_height'] == 0.7
+        assert ground['raytrace_max_range'] == 3.0
+
+
+def test_the_whole_outline_is_checked_against_obstacles():
+    critics = TEMPLATE['controller_server']['ros__parameters']['FollowPath']['critics']
+    assert 'ObstacleFootprint' in critics and 'BaseObstacle' not in critics  # BaseObstacle: only the centre cell
+
+
 def test_speed_limits_are_checked():
     assert stack_config.checked_limits(SETTINGS, None, 1.39, 3.3) == (0.5, 0.8)
     assert stack_config.checked_limits(SETTINGS, 0.3, 1.39, 3.3) == (0.3, 0.8)  # max_speed:= wins
