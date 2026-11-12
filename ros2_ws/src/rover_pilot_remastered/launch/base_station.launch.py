@@ -2,19 +2,23 @@
 
     ros2 launch rover_pilot_remastered base_station.launch.py [wheels:=wheel_28cm] [device_id:=0]
 """
+import os
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+
+from rover_pilot_remastered.dds_check import multicast_problem
 
 
 def generate_launch_description():
     share = Path(get_package_share_directory('rover_pilot_remastered'))
     wheels = PathJoinSubstitution([str(share / 'config' / 'wheels'), [LaunchConfiguration('wheels'), '.yaml']])
-    return LaunchDescription([
+    problem = multicast_problem(os.environ)
+    return LaunchDescription([LogInfo(msg=f'WARNING: {problem}')] * bool(problem) + [
         DeclareLaunchArgument('wheels', default_value='wheel_28cm', description='wheel profile in config/wheels'),
         DeclareLaunchArgument('device_id', default_value='0', description='joystick index for SDL'),
         # joy_node (the raw SDL joystick) reads this PS5's axes reliably; game_controller_node did not. deadzone 0 keeps

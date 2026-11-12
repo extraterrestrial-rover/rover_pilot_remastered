@@ -107,7 +107,9 @@ The same as the laptop, with these differences.
 
 With a second Ethernet port up (or Wi-Fi as well), CycloneDDS picks one port for ROS 2 traffic, and it may pick the
 ESP32's: the rover then never discovers the base station (its log warns "selected arbitrarily"). Pin it to the radio
-port on the onboard computer, laptop or Pi (the base station, with one port, needs nothing):
+port on the onboard computer, laptop or Pi. This file replaces the `~/cyclonedds.xml` of the README's setup (step 4)
+there: it keeps that file's `AllowMulticast` (ROS data never as multicast over the radio) and adds the port. The base
+station, with one port, keeps the README's file.
 
 ```bash
 cat > ~/cyclonedds.xml <<'EOF'
@@ -118,12 +120,14 @@ cat > ~/cyclonedds.xml <<'EOF'
       <Interfaces>
         <NetworkInterface name="eth0"/>   <!-- the port to the radio: check with ip -br addr -->
       </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
     </General>
   </Domain>
 </CycloneDDS>
 EOF
-echo 'export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml' >> ~/.bashrc
 ```
+
+`~/.bashrc` already points `CYCLONEDDS_URI` at this file (README, step 4).
 
 Then, in a new terminal, with `base_station.launch.py` running at the base station: `ros2 topic list` shows `/cmd_vel`
 and `/rover/estop`. CycloneDDS needs that port to have its address when a node starts, so plug the radio in before
