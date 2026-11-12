@@ -77,6 +77,7 @@ def launch_setup(context):
         actions.append(IncludeLaunchDescription(PythonLaunchDescriptionSource(str(zed_launch)), launch_arguments={
             'camera_model': 'zed2i', 'camera_name': str(settings['zed_camera_name']),
             'publish_tf': 'false', 'publish_map_tf': 'false',  # the EKF publishes odom -> rover, RTAB-Map map -> odom
+            'ros_params_override_path': str(share / 'config' / 'zed_override.yaml'),  # continuous odometry
         }.items()))
 
     import xacro  # noqa: PLC0415  (only needed here; keeps the module importable for the tests without xacro)

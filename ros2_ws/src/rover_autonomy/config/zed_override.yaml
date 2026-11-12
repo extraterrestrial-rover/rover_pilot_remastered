@@ -1,0 +1,13 @@
+# Passed to the ZED wrapper by rover_autonomy.launch.py (its ros_params_override_path), after the wrapper's own
+# settings: what this stack depends on, whatever the wrapper's defaults are.
+/**:
+  ros__parameters:
+    pos_tracking:
+      # The odometry must be continuous: the EKF and the costmaps place everything with it, and RTAB-Map corrects the
+      # map frame on loop closures. The wrapper's default resets its odometry to the start on each loop closure, which
+      # snaps the rover's heading back and puts obstacles in the wrong place in the costmap (zed_odometry also takes
+      # such a jump out).
+      reset_odom_with_loop_closure: false
+      area_memory: false  # the ZED's own map of the place is not needed: RTAB-Map maps
+      publish_tf: false   # the EKF publishes odom -> rover and RTAB-Map map -> odom (the launch arguments say so too)
+      publish_map_tf: false

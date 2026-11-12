@@ -7,7 +7,8 @@ mount from autonomy.yaml (the same values the URDF is built from). The covarianc
 
 It passes on only what can be trusted (zed_checks): real poses, and only while the ZED reports that it tracks. When it
 loses tracking the wrapper keeps publishing its last pose, which would freeze the rover in place for the EKF and Nav2
-while it drives on. drive_mux stops AUTO when nothing arrives here.
+while it drives on. drive_mux stops AUTO when nothing arrives here. And it keeps the odometry continuous: a jump (the
+wrapper resetting its odometry on a loop closure) is taken out, so the costmaps never get obstacles in the wrong place.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from rover_autonomy.frames import camera_to_base, from_xyz_rpy
-from rover_autonomy.zed_checks import checked_pose, tracking_problem
+from rover_autonomy.zed_checks import ContinuousOdometry, checked_pose, tracking_problem
 
 try:
     from zed_msgs.msg import PosTrackStatus
@@ -40,6 +41,7 @@ class ZedOdometry(Node):
         status_topic = param('zed_status_topic', '/zed/zed_node/pose/status').value  # '' = not checked
         self.output = self.create_publisher(Odometry, target, 10)
         self.tracking = ''  # what the ZED reports when it does not track
+        self.continuous = ContinuousOdometry()
         self.withheld = ''  # why odometry is not passed on right now
         # The ZED wrapper's publishers are reliable or best effort depending on its settings: best effort takes both.
         self.create_subscription(Odometry, source, self.on_odometry, qos_profile_sensor_data)
@@ -70,6 +72,11 @@ class ZedOdometry(Node):
             self.withheld = withheld
         if withheld:
             return
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+        camera, jumped = self.continuous.update(camera, stamp)
+        if jumped:
+            self.get_logger().warn(f"the ZED's odometry jumped (a reset on loop closure?): taken out, the pose carries on "
+                                   f'({self.continuous.jumps} so far)')
         base = camera_to_base(camera, self.mount)
         out = Odometry()
         out.header = message.header

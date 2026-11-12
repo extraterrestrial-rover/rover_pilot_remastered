@@ -33,6 +33,15 @@ def test_rviz_goals_reach_nav2_only_through_goal_manager():
     assert navigator['/goal_pose'] != '/goal_pose'
 
 
+def test_the_zed_odometry_never_resets():
+    """The wrapper's default resets its odometry on a loop closure: the rover's heading snapped back while it turned
+    in front of a wall, and the costmap showed the wall in two places."""
+    assert "'ros_params_override_path': str(share / 'config' / 'zed_override.yaml')" in SOURCE
+    tracking = yaml.safe_load((PACKAGE / 'config' / 'zed_override.yaml').read_text())['/**']['ros__parameters']['pos_tracking']
+    assert tracking['reset_odom_with_loop_closure'] is False and tracking['area_memory'] is False
+    assert tracking['publish_tf'] is False and tracking['publish_map_tf'] is False
+
+
 def test_drive_node_listens_to_the_mux():
     assert "SetRemap(src='/cmd_vel', dst='/cmd_vel_drive')" in SOURCE
     # ... for its e-stop too: the mux passes the base station's on, and holds it released only while a goal is
