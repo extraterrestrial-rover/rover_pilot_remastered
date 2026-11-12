@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import os
 import select
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -116,19 +118,23 @@ class FakeEsp:
             pass  # nobody has the port open yet
 
 
-def open_pty() -> tuple[int, str]:
-    """Create a raw pseudo-terminal; returns (master fd for the fake, slave path for the drive node)."""
+def open_pty() -> tuple[int, int, str]:
+    """Create a raw pseudo-terminal; returns (master fd for the fake, slave fd, slave path for the drive node).
+
+    Keep the slave fd open as long as the master: while nobody has the slave open the master reports a hang-up, and
+    FakeEsp.run() would spin on it until the drive node opens the port. Close both to "unplug".
+    """
     import pty  # noqa: PLC0415 - POSIX only
     import tty  # noqa: PLC0415
 
     master_fd, slave_fd = pty.openpty()
     tty.setraw(slave_fd)
     os.set_blocking(master_fd, False)
-    return master_fd, os.ttyname(slave_fd)
+    return master_fd, slave_fd, os.ttyname(slave_fd)
 
 
 def start_in_background(max_wheel_rpm: float = 94.7) -> tuple[FakeEsp, str]:
-    fd, path = open_pty()
+    fd, _slave_fd, path = open_pty()  # both stay open for the life of the test process
     fake = FakeEsp(fd, max_wheel_rpm)
     threading.Thread(target=fake.run, name='fake-esp', daemon=True).start()
     return fake, path
@@ -140,8 +146,10 @@ class Simulator:
     The other branch has a Simulator with the same methods, so the rehearsal does not depend on the link.
     """
 
-    def __init__(self, path: str = '/tmp/rover-drive-sim') -> None:
-        self.path = path
+    def __init__(self, path: str | None = None) -> None:
+        # A path of its own by default, so two simulators (two rehearsals, a rehearsal next to a test) never share one.
+        self._directory = None if path is not None else tempfile.mkdtemp(prefix='rover-drive-sim-')
+        self.path = path if path is not None else str(Path(self._directory) / 'port')
         self.fake: FakeEsp | None = None
         self._plug()
 
@@ -175,6 +183,7 @@ class Simulator:
         self.fake.stop_event.set()
         self._thread.join(2)
         os.close(self._fd)  # the drive node's port now fails, as when the cable is pulled
+        os.close(self._slave_fd)
         Path(self.path).unlink(missing_ok=True)
         self.fake = None
 
@@ -185,9 +194,12 @@ class Simulator:
 
     def close(self) -> None:
         self.unplug()
+        if self._directory is not None:
+            shutil.rmtree(self._directory, ignore_errors=True)
+            self._directory = None
 
     def _plug(self) -> None:
-        self._fd, real_path = open_pty()
+        self._fd, self._slave_fd, real_path = open_pty()
         self.fake = FakeEsp(self._fd)
         self._thread = threading.Thread(target=self.fake.run, name='fake-esp', daemon=True)
         self._thread.start()
@@ -202,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--link', default='/tmp/rover-drive', help='symlink to create for the pseudo-terminal')
     parser.add_argument('--max-wheel-rpm', type=float, default=94.7)
     args = parser.parse_args(argv)
-    fd, path = open_pty()
+    fd, slave_fd, path = open_pty()
     link = Path(args.link)
     if link.is_symlink() or link.exists():
         link.unlink()
@@ -215,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         link.unlink(missing_ok=True)
+        os.close(fd)
+        os.close(slave_fd)
     return 0
 
 

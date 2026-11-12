@@ -78,10 +78,16 @@ def main() -> int:
             run(*step)
     except KeyboardInterrupt:
         pass
+    except (serial.SerialException, OSError) as error:
+        print(f'\nLost the port {args.port}: {error}. The ESP32 stops its motors by itself 0.3 s after the last command.')
+        return 1
     finally:
-        for _ in range(3):
-            port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(True, ZERO)))
-            seq = (seq + 1) & 0xFF
+        try:
+            for _ in range(3):
+                port.write(protocol.encode_packet(protocol.TYPE_DRIVE_COMMAND, seq, protocol.drive_command_payload(True, ZERO)))
+                seq = (seq + 1) & 0xFF
+        except (serial.SerialException, OSError):
+            pass  # the port is gone: the firmware's command timeout stops the motors
         port.close()
     print('\nDone. If a wheel was wrong, fix firmware/include/config.h (pins / forward_level); if only turning was '
           'mirrored, set swap_sides or swap the left/right pin entries.')

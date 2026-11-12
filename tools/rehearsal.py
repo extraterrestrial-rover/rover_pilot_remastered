@@ -7,7 +7,10 @@ fake_esp.Simulator on this branch's link (LINK.md) inside this process; the PS5 
 joy_node does (20 Hz autorepeat), with the axis and button numbers from config/drive.yaml; "unplugging" either of them
 stops it. Nothing touches real hardware.
 
-Needs ROS 2 Humble and this workspace built and sourced, with the RMW and ROS_DOMAIN_ID you use on the rover:
+It releases the e-stop and drives at full speed, so it never runs in the rover's ROS domain: it uses domain 63
+(--domain), keeps its ROS traffic on this machine, and refuses to start if another node is already in that domain.
+
+Needs ROS 2 Humble and this workspace built and sourced, with the RMW you use on the rover:
     source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
     python3 tools/rehearsal.py                       # every step; PASS/FAIL table, exit code 1 on any failure
     python3 tools/rehearsal.py --wheels wheel_other
@@ -34,7 +37,7 @@ from diagnostic_msgs.msg import DiagnosticArray  # noqa: E402
 from rclpy.executors import SingleThreadedExecutor  # noqa: E402
 from sensor_msgs.msg import Joy  # noqa: E402
 
-from rover_pilot_remastered import fake_esp  # noqa: E402
+from rover_pilot_remastered import fake_esp, ros_sandbox  # noqa: E402
 
 # The base station's joystick mapping, as base_teleop gets it from the launch file.
 TELEOP = yaml.safe_load((ROOT / 'ros2_ws' / 'src' / 'rover_pilot_remastered' / 'config' / 'drive.yaml').read_text())['base_teleop']['ros__parameters']
@@ -363,10 +366,20 @@ class Rehearsal:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--wheels', default='wheel_28cm', help='wheel profile for both launches (config/wheels)')
+    parser.add_argument('--domain', type=int, default=ros_sandbox.REHEARSAL_DOMAIN,
+                        help='ROS domain for this run (default %(default)s); never the rover\'s')
     args = parser.parse_args()
+    try:
+        ros_sandbox.enter(args.domain)  # before rclpy.init() and the launches: they inherit it
+    except ValueError as error:
+        parser.error(str(error))
     logs = Path(tempfile.mkdtemp(prefix='rover-rehearsal-'))
     rehearsal = Rehearsal(args.wheels, logs)
     try:
+        others = ros_sandbox.foreign_nodes(rehearsal.node)
+        if others:
+            print(ros_sandbox.refusal(args.domain, others) + ' (--domain <number>)')
+            return 1
         passed = rehearsal.run()
     except KeyboardInterrupt:
         passed = False
