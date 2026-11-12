@@ -8,6 +8,8 @@ Goals come from RViz at the base station (/goal_pose). Rules:
     the base station is heard in AUTO with the e-stop released: at once after a radio drop, or once the operator
     releases the e-stop and presses AUTO after a base-station restart (which starts e-stopped, in manual). An e-stop
     press heard while the goal is paused, or a new goal, drops it;
+  - drive_mux stopping AUTO by itself (no odometry from the camera, no motion although commanded), or not running,
+    cancels it;
   - reaching the goal, or Nav2 giving up on its own, ends it.
 The heartbeats are /rover/auto and /rover/estop from base_teleop; both must be fresh.
 """
@@ -17,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 SEND, CANCEL = 'send', 'cancel'
+MUX_TIMEOUT_S = 1.0  # drive_mux reports its fault state at 10 Hz; silent this long, it is not running
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class GoalLogic:
         self._auto, self._auto_time = False, None
         self._estop, self._estop_time = True, None
         self._estop_seen: bool | None = None  # the e-stop state at the last update with the base station heard
+        self._fault, self._fault_time = '', None  # drive_mux's report: why AUTO stopped itself ('' = it has not)
         self.events: list[str] = []
 
     def on_auto(self, auto: bool, now: float) -> None:
@@ -40,6 +44,15 @@ class GoalLogic:
 
     def on_estop(self, estopped: bool, now: float) -> None:
         self._estop, self._estop_time = estopped, now
+
+    def on_fault(self, fault: str, now: float) -> None:
+        self._fault, self._fault_time = fault, now
+
+    def fault(self, now: float) -> str:
+        """Why AUTO cannot drive now: drive_mux's fault, or that drive_mux itself is not heard."""
+        if self._fault_time is None or now - self._fault_time > MUX_TIMEOUT_S:
+            return 'drive_mux is not running'
+        return self._fault
 
     def link_ok(self, now: float) -> bool:
         return all(stamp is not None and now - stamp <= self.link_timeout_s for stamp in (self._auto_time, self._estop_time))
@@ -60,6 +73,13 @@ class GoalLogic:
 
     def update(self, now: float) -> list[Action]:
         """Call often (10 Hz) and after every heartbeat."""
+        fault = self.fault(now)
+        if fault and self.goal is not None:
+            # AUTO stopped itself (no odometry, no motion): Nav2 must not go on trying, least of all with its spins.
+            self.events.append(f'goal cancelled: {fault}')
+            was_running = self.running
+            self.goal, self.running = None, False
+            return [Action(CANCEL)] if was_running else []
         if not self.link_ok(now):
             self._estop_seen = None  # what is heard first afterwards is where the base station is, not a button press
             if self.goal is not None and self.running:

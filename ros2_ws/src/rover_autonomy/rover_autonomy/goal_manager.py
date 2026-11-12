@@ -35,6 +35,7 @@ class GoalManager(Node):
         self.create_subscription(PoseStamped, param('goal_topic', '/goal_pose').value, self.on_goal, 10)
         self.create_subscription(Bool, param('auto_topic', '/rover/auto').value, self.on_auto, LATEST_ONLY)
         self.create_subscription(Bool, param('estop_topic', '/rover/estop').value, self.on_estop, LATEST_ONLY)
+        self.create_subscription(String, param('fault_topic', '/rover/auto_fault').value, self.on_fault, LATEST_ONLY)
         self.create_timer(1.0 / param('rate_hz', 10.0).value, self.update)
         self.sequence = 0  # every send and cancel; a response or result for an older one is stale
         self.wanted: int | None = None  # the sequence number of the goal that should be running
@@ -54,6 +55,9 @@ class GoalManager(Node):
 
     def on_estop(self, msg: Bool) -> None:
         self.logic.on_estop(msg.data, time.monotonic())
+
+    def on_fault(self, msg: String) -> None:
+        self.logic.on_fault(msg.data, time.monotonic())
 
     def update(self) -> None:
         self.run(self.logic.update(time.monotonic()))

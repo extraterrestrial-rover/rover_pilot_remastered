@@ -15,53 +15,124 @@ def fastest(linear, angular):
     return max(abs(left), abs(right))
 
 
-def test_manual_passes_the_sticks_through_and_stale_input_is_dropped():
+class Run:
+    """A mux fed like on the rover: the AUTO heartbeat, Nav2's command and the odometry, 50 times a second."""
+
+    def __init__(self, config: MuxConfig = MuxConfig()) -> None:
+        self.mux, self.now, self.x = DriveMux(config, ROVER), 0.0, 0.0
+
+    def step(self, seconds, *, auto=True, command=(0.4, 0.0), odometry='moving'):
+        """Returns the last output. odometry: 'moving', 'frozen' (the same pose again) or None (nothing arrives)."""
+        out = None
+        for _ in range(round(seconds / 0.02)):
+            self.now += 0.02
+            if auto is not None:
+                self.mux.on_mode(auto, self.now)
+            if command is not None:
+                self.mux.on_auto_command(*command, self.now)
+            if odometry == 'moving':
+                self.x += 0.01
+            if odometry is not None:
+                self.mux.on_odometry(self.x, 0.0, 0.0, self.now)
+            out = self.mux.output(self.now)
+        return out
+
+
+def test_manual_commands_are_passed_on_as_they_arrive_and_never_repeated():
     mux = DriveMux(MuxConfig(), ROVER)
-    assert mux.output(0.0) is None  # nothing heard yet
     mux.on_mode(False, 0.0)
-    mux.on_manual(0.7, -0.2, 0.0)
     mux.on_auto_command(0.3, 0.0, 0.0)  # Nav2 is ignored in manual
-    assert mux.output(0.1) == (0.7, -0.2)
-    mux.on_mode(False, 0.4)
-    assert mux.output(0.4) is None  # the sticks' command is 0.4 s old: drive_node times out as usual
+    assert mux.on_manual(0.7, -0.2, 0.1) == (0.7, -0.2)
+    # The mux repeats nothing: drive_node sees each stick command once, so its 0.3 s command timeout counts from the
+    # last one the base station really sent. (Repeating the last command for 0.3 s added that much to every stop.)
+    assert mux.output(0.12) is None and mux.output(0.3) is None and mux.state == 'manual'
+
+
+def test_a_base_station_without_the_auto_heartbeat_drives_manually():
+    # A base station on a branch without AUTO never sends /rover/auto. The rover used to be undrivable then.
+    mux = DriveMux(MINIMUMS, ROVER)
+    assert mux.on_manual(0.05, 0.0, 0.0) == (0.05, 0.0)  # and manual is never deadband-corrected
+    assert mux.output(0.0) is None and 'no AUTO heartbeat' in mux.state
+    mux.on_mode(True, 1.0)
+    assert mux.on_manual(0.5, 0.0, 1.0) is None  # in AUTO the sticks' zeros are not passed on
+    assert mux.on_manual(0.5, 0.0, 1.6) == (0.5, 0.0)  # the AUTO heartbeat is 0.6 s old: manual again
 
 
 def test_auto_starts_with_zeros_then_follows_nav2():
-    mux = DriveMux(MuxConfig(neutral_hold_s=0.3), ROVER)
-    mux.on_mode(True, 0.0)
-    mux.on_manual(0.0, 0.0, 0.0)
-    mux.on_auto_command(0.4, 0.1, 0.0)
-    assert mux.output(0.0) == (0.0, 0.0)
-    assert mux.output(0.29) == (0.0, 0.0)
-    mux.on_mode(True, 0.3)
-    mux.on_auto_command(0.4, 0.1, 0.3)
-    assert mux.output(0.31) == (0.4, 0.1)
-    assert mux.state == 'AUTO: following Nav2'
+    run = Run(MuxConfig(neutral_hold_s=0.3))
+    assert run.step(0.02) == (0.0, 0.0) and run.mux.state == 'AUTO: neutral first'
+    assert run.step(0.26) == (0.0, 0.0)
+    assert run.step(0.1, command=(0.4, 0.1)) == (0.4, 0.1)
+    assert run.mux.state == 'AUTO: following Nav2' and run.mux.fault == ''
 
 
 def test_auto_without_a_goal_holds_still():
-    mux = DriveMux(MuxConfig(neutral_hold_s=0.0), ROVER)
-    mux.on_mode(True, 0.0)
-    assert mux.output(0.1) == (0.0, 0.0)
-    mux.on_auto_command(0.4, 0.0, 0.1)
-    mux.on_mode(True, 0.45)
-    assert mux.output(0.45) == (0.0, 0.0)  # Nav2's last command is 0.35 s old
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(0.1, command=None) == (0.0, 0.0)
+    assert run.step(0.1) == (0.4, 0.0)
+    assert run.step(0.36, command=None) == (0.0, 0.0)  # Nav2's last command is over 0.3 s old
+    assert 'holding still' in run.mux.state
 
 
-def test_losing_the_base_station_passes_nothing_and_auto_restarts_with_zeros():
-    mux = DriveMux(MuxConfig(neutral_hold_s=0.3), ROVER)
-    mux.on_mode(True, 0.0)
-    assert mux.output(0.0) == (0.0, 0.0)  # the mux runs at 50 Hz: the AUTO stretch starts here
-    mux.on_auto_command(0.4, 0.0, 0.5)
-    mux.on_mode(True, 0.5)
-    assert mux.output(0.5) == (0.4, 0.0)
-    assert mux.output(1.1) is None  # heartbeat 0.6 s old: drive_node's heartbeat check e-stops
-    mux.on_mode(True, 3.0)  # the radio is back, still AUTO
-    mux.on_auto_command(0.4, 0.0, 3.0)
-    assert mux.output(3.0) == (0.0, 0.0)  # the ESP32 needs a neutral command after the e-stop
-    mux.on_mode(True, 3.3)
-    mux.on_auto_command(0.4, 0.0, 3.3)
-    assert mux.output(3.31) == (0.4, 0.0)
+def test_losing_the_auto_heartbeat_ends_auto_and_it_restarts_with_zeros():
+    run = Run(MuxConfig(neutral_hold_s=0.3))
+    assert run.step(0.5) == (0.4, 0.0)
+    assert run.step(0.6, auto=None) is None and 'base station not heard' in run.mux.state
+    assert run.step(0.02) == (0.0, 0.0)  # back in AUTO: the ESP32 needs a neutral command after the e-stop
+    assert run.step(0.4) == (0.4, 0.0)
+
+
+def test_auto_does_not_drive_without_odometry():
+    # Without odometry the EKF keeps predicting at the last speed and Nav2 follows its imagination: in the rehearsal
+    # the rover drove 3.5 m blind in 12 s after the camera's odometry stopped.
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(0.1, odometry=None) == (0.0, 0.0)  # none yet: AUTO does not even start
+    assert run.mux.fault == 'no odometry from the camera' and 'AUTO stopped' in run.mux.state
+    assert run.step(0.2) == (0.0, 0.0) and run.mux.fault  # odometry is back, but Nav2 still runs the goal that hit it
+    assert run.step(0.4, command=None) == (0.0, 0.0) and run.mux.fault == ''  # that goal is gone: ready again
+    assert run.step(0.1) == (0.4, 0.0)
+    assert run.step(0.48, odometry=None) == (0.4, 0.0)  # a short gap is not a loss
+    assert run.step(0.06, odometry=None) == (0.0, 0.0) and run.mux.fault == 'no odometry from the camera'
+
+
+def test_a_motion_command_without_motion_stops_auto():
+    # The ZED wrapper repeats its last pose when it loses tracking: the rover drove 9 m in 20 s with frozen odometry.
+    run = Run(MuxConfig(neutral_hold_s=0.0, no_motion_timeout_s=3.0))
+    assert run.step(2.9, odometry='frozen') == (0.4, 0.0)
+    assert run.step(0.2, odometry='frozen') == (0.0, 0.0)
+    assert 'has not moved for 3 s' in run.mux.fault
+    assert run.step(0.4, odometry='frozen', command=None) == (0.0, 0.0) and run.mux.fault == ''
+    assert run.step(10.0) == (0.4, 0.0) and run.mux.fault == ''  # moving: never a fault
+    assert run.step(10.0, odometry='frozen', command=(0.0, 0.0)) == (0.0, 0.0) and run.mux.fault == ''  # told to stand
+    off = Run(MuxConfig(neutral_hold_s=0.0, no_motion_timeout_s=0.0))
+    assert off.step(10.0, odometry='frozen') == (0.4, 0.0)  # 0 turns the check off
+
+
+def test_turning_on_the_spot_counts_as_motion():
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    for step in range(300):  # 6 s of turning: only the heading changes
+        run.now += 0.02
+        run.mux.on_mode(True, run.now)
+        run.mux.on_auto_command(0.0, 0.5, run.now)
+        run.mux.on_odometry(0.0, 0.0, math.remainder(0.01 * step, 2 * math.pi), run.now)
+        assert run.mux.output(run.now) == (0.0, 0.5)
+
+
+def test_an_esp32_that_is_not_driving_gets_zeros_again():
+    # After an ESP32 reset or a link hiccup it waits for a neutral command. Nav2 never sends one while it drives: in
+    # the rehearsal the rover stood for 30 s after a reset, until Nav2's own recovery paused its commands.
+    run = Run(MuxConfig(neutral_hold_s=0.3, rearm_interval_s=1.5))
+    assert run.step(2.0) == (0.4, 0.0)
+    run.mux.on_drive_state('WAIT_NEUTRAL', run.now)
+    assert run.step(0.02) == (0.0, 0.0) and run.mux.state == 'AUTO: neutral first'
+    assert run.step(0.4) == (0.4, 0.0)  # zeros for 0.3 s, then Nav2 again
+    assert run.step(1.0) == (0.4, 0.0)  # the same report is still the latest: not again before 1.5 s
+    assert run.step(0.2) == (0.0, 0.0)  # still not driving after 1.5 s: once more
+    run.mux.on_drive_state('DRIVING', run.now)
+    assert run.step(2.0) == (0.4, 0.0)
+    run.mux.on_drive_state('NO_COMMAND', run.now)
+    run.step(0.4)
+    assert run.step(4.0) == (0.4, 0.0)  # a report older than 3 s says nothing: drive_node itself is gone
 
 
 def sides(linear, angular):
@@ -129,15 +200,7 @@ def test_a_wrong_deadband_can_never_mean_full_speed():
     assert deadband_corrected(0.0, 0.3, ROVER, wrong) == (0.0, 0.3)
 
 
-def test_manual_is_never_raised():
-    mux = DriveMux(MINIMUMS, ROVER)
-    mux.on_mode(False, 0.0)
-    mux.on_manual(0.05, 0.0, 0.0)
-    assert mux.output(0.0) == (0.05, 0.0)
-
-
 def test_non_finite_nav2_commands_stop():
-    mux = DriveMux(MuxConfig(neutral_hold_s=0.0), ROVER)
-    mux.on_mode(True, 0.0)
-    mux.on_auto_command(float('nan'), 0.0, 0.0)
-    assert mux.output(0.0) == (0.0, 0.0)
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(0.1, command=(float('nan'), 0.0)) == (0.0, 0.0)
+    assert run.step(0.1, command=(0.2, float('inf'))) == (0.0, 0.0)

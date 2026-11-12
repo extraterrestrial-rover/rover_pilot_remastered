@@ -30,6 +30,7 @@
     zed_rgb_topic: /zed/zed_node/rgb/color/rect/image
     zed_rgb_info_topic: /zed/zed_node/rgb/color/rect/camera_info
     zed_depth_topic: /zed/zed_node/depth/depth_registered
+    zed_status_topic: /zed/zed_node/pose/status   # its tracking status: AUTO stops when it is lost ('' = not checked)
 
     map_database: ~/.ros/rover_map.db  # RTAB-Map's map. A fresh run keeps the previous one as rover_map-<time>.db
 
@@ -46,6 +47,12 @@ drive_mux:
     min_wheel_rpm_straight: 0.0  # the target where the rover just starts to roll straight ahead (expect about 15 to 25)
     min_wheel_rpm_spin: 0.0      # the target where it just starts to turn in place (skid steer needs much more)
     stop_below_rpm: 0.5          # slower commands are noise: a stop
+    # AUTO stops itself, and the goal is cancelled, when it cannot know where the rover is:
+    odometry_timeout_s: 0.5      # no odometry from the camera for this long
+    no_motion_timeout_s: 3.0     # a motion command for this long without the odometry moving (0.0 = not checked)
+    no_motion_distance_m: 0.03   # what counts as moving: this far ...
+    no_motion_angle_rad: 0.03    # ... or this much turned
+    rearm_interval_s: 1.5        # the ESP32 not driving in AUTO (reset, link hiccup): zeros again, at most this often
 
 goal_manager:
   ros__parameters:
