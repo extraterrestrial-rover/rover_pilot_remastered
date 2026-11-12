@@ -7,6 +7,8 @@ e-stop stops the rover whatever else is going on. Its AUTO heartbeat (/rover/aut
   - AUTO: Nav2's command, after a short run of zeros whenever AUTO (re)starts, because the ESP32 drives again after
     any stop only once it has seen a neutral command; then each command is corrected for the motors' deadband (an
     open-loop wheel turns only above some PWM), per side, so Nav2's slow commands still move this skid-steer rover.
+    Nav2 is followed only while goal_manager reports a goal of its own (/rover/goal_active): a goal sent to Nav2 any
+    other way (its RViz panel, a goal left over from a goal_manager that restarted) never moves the rover.
 
 AUTO stops itself (zeros, and a fault that goal_manager cancels the goal on) when it cannot know where the rover is:
   - no odometry from the camera for odometry_timeout_s (unplugged, its node gone, tracking lost);
@@ -212,10 +214,12 @@ class DriveMux:
             return bool(self._estop)
         return not self._linkless
 
+    def _goal_running(self, now: float) -> bool:
+        return self._goal_active and self._goal_time is not None and now - self._goal_time <= self.config.goal_timeout_s
+
     def _may_finish_the_goal(self, now: float) -> bool:
         """The base station fell silent while AUTO was on, the e-stop released, and a goal is still running."""
-        return (self._auto is True and self._estop is False and self._goal_active
-                and self._goal_time is not None and now - self._goal_time <= self.config.goal_timeout_s)
+        return self._auto is True and self._estop is False and self._goal_running(now)
 
     def _leave_auto(self) -> None:
         self._auto_since = self._motion_since = None
@@ -226,7 +230,7 @@ class DriveMux:
         fault = self._find_fault(now)
         if fault:
             self.fault = fault
-        elif self.fault and not commanded:
+        elif self.fault and not self._goal_running(now):
             self.fault = ''  # the goal that ran into it is gone (goal_manager cancelled it): ready for the next one
         if self.fault:
             self._auto_since = self._motion_since = None
@@ -238,9 +242,13 @@ class DriveMux:
             self._motion_since = None
             self.state = f'{label}: neutral first'
             return 0.0, 0.0
+        if not self._goal_running(now):
+            self._motion_since = None
+            self.state = f'{label}: no goal from goal_manager: holding still' + (' (ignoring Nav2)' if commanded else '')
+            return 0.0, 0.0
         if not commanded:
             self._motion_since = None
-            self.state = f'{label}: no Nav2 command (no goal): holding still'
+            self.state = f'{label}: no Nav2 command: holding still'
             return 0.0, 0.0
         self.state = f'{label}: following Nav2'
         linear_x, angular_z = self._auto_cmd

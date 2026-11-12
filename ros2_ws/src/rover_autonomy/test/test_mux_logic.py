@@ -84,6 +84,15 @@ def test_auto_without_a_goal_holds_still():
     assert 'holding still' in run.mux.state
 
 
+def test_nav2_is_followed_only_for_a_goal_of_goal_managers():
+    # A goal sent around goal_manager (Nav2's RViz panel, or one left over when goal_manager restarted mid-goal) used
+    # to drive the rover: in the rehearsal it turned 98 degrees on its own after Options and Triangle, with no goal.
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(1.0, goal=False) == (0.0, 0.0) and 'ignoring Nav2' in run.mux.state
+    assert run.step(0.6, goal=None) == (0.0, 0.0)  # goal_manager silent: the same
+    assert run.step(0.1) == (0.4, 0.0)
+
+
 def test_the_base_stations_estop_is_passed_on_and_ends_auto():
     run = Run(MuxConfig(neutral_hold_s=0.3))
     assert run.step(0.5) == (0.4, 0.0) and run.mux.estop_output(run.now) is False
@@ -169,8 +178,8 @@ def test_auto_does_not_drive_without_odometry():
     run = Run(MuxConfig(neutral_hold_s=0.0))
     assert run.step(0.1, odometry=None) == (0.0, 0.0)  # none yet: AUTO does not even start
     assert run.mux.fault == 'no odometry from the camera' and 'AUTO stopped' in run.mux.state
-    assert run.step(0.2) == (0.0, 0.0) and run.mux.fault  # odometry is back, but Nav2 still runs the goal that hit it
-    assert run.step(0.4, command=None) == (0.0, 0.0) and run.mux.fault == ''  # that goal is gone: ready again
+    assert run.step(0.2) == (0.0, 0.0) and run.mux.fault  # odometry is back, but the goal that hit it still runs
+    assert run.step(0.6, goal=False) == (0.0, 0.0) and run.mux.fault == ''  # goal_manager cancelled it: ready again
     assert run.step(0.1) == (0.4, 0.0)
     assert run.step(0.48, odometry=None) == (0.4, 0.0)  # a short gap is not a loss
     assert run.step(0.06, odometry=None) == (0.0, 0.0) and run.mux.fault == 'no odometry from the camera'
@@ -182,7 +191,7 @@ def test_a_motion_command_without_motion_stops_auto():
     assert run.step(2.9, odometry='frozen') == (0.4, 0.0)
     assert run.step(0.2, odometry='frozen') == (0.0, 0.0)
     assert 'has not moved for 3 s' in run.mux.fault
-    assert run.step(0.4, odometry='frozen', command=None) == (0.0, 0.0) and run.mux.fault == ''
+    assert run.step(0.6, odometry='frozen', goal=False) == (0.0, 0.0) and run.mux.fault == ''
     assert run.step(10.0) == (0.4, 0.0) and run.mux.fault == ''  # moving: never a fault
     assert run.step(10.0, odometry='frozen', command=(0.0, 0.0)) == (0.0, 0.0) and run.mux.fault == ''  # told to stand
     off = Run(MuxConfig(neutral_hold_s=0.0, no_motion_timeout_s=0.0))
@@ -195,6 +204,7 @@ def test_turning_on_the_spot_counts_as_motion():
         run.now += 0.02
         run.mux.on_mode(True, run.now)
         run.mux.on_estop(False, run.now)
+        run.mux.on_goal_active(True, run.now)
         run.mux.on_auto_command(0.0, 0.5, run.now)
         run.mux.on_odometry(0.0, 0.0, math.remainder(0.01 * step, 2 * math.pi), run.now)
         assert run.mux.output(run.now) == (0.0, 0.5)
