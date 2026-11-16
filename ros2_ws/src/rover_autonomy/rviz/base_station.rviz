@@ -124,6 +124,21 @@ Visualization Manager:
       Show Arrows: false
       Marker Scale: 0.5
     - Class: rviz_default_plugins/PointCloud2
+      Name: Obstacles (what Nav2 avoids)
+      Enabled: true
+      Value: true
+      Style: Points
+      Size (Pixels): 4
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+      Decay Time: 0
+      Topic:
+        Value: /rover/obstacles
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+    - Class: rviz_default_plugins/PointCloud2
       Name: ZED point cloud (heavy over the radio)
       Enabled: false
       Value: false
