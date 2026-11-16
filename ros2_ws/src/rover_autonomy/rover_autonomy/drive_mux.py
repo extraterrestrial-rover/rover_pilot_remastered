@@ -6,7 +6,8 @@ this node publishes: the base station's e-stop, passed on the moment it arrives.
 silent does this node decide: released while AUTO goes on to a running goal, latched otherwise. If this node stops,
 drive_node gets neither commands nor an e-stop heartbeat and stops the rover.
 
-In AUTO it also watches the camera's odometry (zed_odometry's output) and the ESP32's state (drive_node's
+In AUTO it also watches the camera's odometry (zed_odometry's output), whether Nav2's two costmaps still know where
+the rover is (their footprints carry the time of the transform they used), and the ESP32's state (drive_node's
 /diagnostics), and reports on /rover/auto_fault when it stopped AUTO by itself, so that goal_manager cancels the goal.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ import time
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PolygonStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -24,7 +25,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 
 from rover_autonomy.frames import yaw_of
-from rover_autonomy.mux_logic import DriveMux, MuxConfig, checked_deadband
+from rover_autonomy.mux_logic import NAV_COSTMAPS, DriveMux, MuxConfig, checked_deadband
 from rover_pilot_remastered.kinematics import DriveGeometry
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -62,6 +63,8 @@ class DriveMuxNode(Node):
             rearm_interval_s=param('rearm_interval_s', defaults.rearm_interval_s).value,
             goal_timeout_s=param('goal_timeout_s', defaults.goal_timeout_s).value,
             linkless_limit_s=param('linkless_limit_s', defaults.linkless_limit_s).value,
+            nav_pose_max_age_s=param('nav_pose_max_age_s', defaults.nav_pose_max_age_s).value,
+            nav_pose_timeout_s=param('nav_pose_timeout_s', defaults.nav_pose_timeout_s).value,
         )
         self.mux = DriveMux(config, geometry)
         self.output = self.create_publisher(Twist, param('output_topic', '/cmd_vel_drive').value, LATEST_ONLY)
@@ -73,6 +76,9 @@ class DriveMuxNode(Node):
         self.create_subscription(Bool, param('goal_active_topic', '/rover/goal_active').value, self.on_goal_active, LATEST_ONLY)
         self.create_subscription(Odometry, param('odometry_topic', '/zed/odom_base').value, self.on_odometry, 10)
         self.create_subscription(DiagnosticArray, '/diagnostics', self.on_diagnostics, 10)
+        for costmap in NAV_COSTMAPS:
+            topic = param(f'{costmap}_footprint_topic', f'/{costmap}_costmap/published_footprint').value
+            self.create_subscription(PolygonStamped, topic, lambda msg, costmap=costmap: self.on_footprint(costmap, msg), 10)
         self.fault = self.create_publisher(String, param('fault_topic', '/rover/auto_fault').value, LATEST_ONLY)
         rate_hz = param('rate_hz', 50.0).value
         self.create_timer(1.0 / rate_hz, self.tick)
@@ -103,6 +109,10 @@ class DriveMuxNode(Node):
     def on_odometry(self, msg: Odometry) -> None:
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         self.mux.on_odometry(p.x, p.y, yaw_of((p.x, p.y, p.z, q.x, q.y, q.z, q.w)), time.monotonic())
+
+    def on_footprint(self, costmap: str, msg: PolygonStamped) -> None:
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9  # the time of the transform the costmap used
+        self.mux.on_nav_pose(costmap, self.get_clock().now().nanoseconds * 1e-9 - stamp, time.monotonic())
 
     def on_diagnostics(self, msg: DiagnosticArray) -> None:
         for status in msg.status:

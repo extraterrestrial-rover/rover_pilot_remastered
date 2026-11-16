@@ -52,6 +52,10 @@ drive_mux:
     no_motion_timeout_s: 3.0     # a motion command for this long without the odometry moving (0.0 = not checked)
     no_motion_distance_m: 0.03   # what counts as moving: this far ...
     no_motion_angle_rad: 0.03    # ... or this much turned
+    # ... and when Nav2 itself cannot: each of its two costmaps reports the time of the transform it places the
+    # rover with (their footprint topics). A costmap whose transforms have stopped steers from an old position.
+    nav_pose_max_age_s: 1.0      # a costmap working with a transform older than this (0.0 = not checked)
+    nav_pose_timeout_s: 3.0      # a costmap not heard for this long
     rearm_interval_s: 1.5        # the ESP32 not driving in AUTO (reset, link hiccup): zeros again, at most this often
     # The base station silent while a goal runs: the rover goes on to its goal, then the e-stop is latched until the
     # base station is back. Nothing at the base station can stop the rover on that stretch (the kill switch can).

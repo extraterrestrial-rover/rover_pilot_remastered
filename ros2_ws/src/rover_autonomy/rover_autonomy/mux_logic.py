@@ -13,7 +13,11 @@ e-stop stops the rover whatever else is going on. Its AUTO heartbeat (/rover/aut
 AUTO stops itself (zeros, and a fault that goal_manager cancels the goal on) when it cannot know where the rover is:
   - no odometry from the camera for odometry_timeout_s (unplugged, its node gone, tracking lost);
   - a motion command for no_motion_timeout_s without the odometry moving (odometry frozen, wheels stuck, or the
-    deadband set too low for the motors to turn).
+    deadband set too low for the motors to turn);
+  - Nav2 itself no longer knows: one of its costmaps places the rover with a transform older than
+    nav_pose_max_age_s, or is not heard at all. Each costmap has its own copy of the transforms, and a copy can
+    stop (tf2 0.25.23 deadlocks there): Nav2 then steers from the last position it knew, and takes in no new
+    obstacles, while the camera's odometry above is fine.
 And when drive_node reports that the ESP32 is not driving (it was reset, or its link hiccuped), AUTO sends zeros
 again first: nobody centres a stick for Nav2.
 
@@ -44,6 +48,8 @@ class MuxConfig:
     rearm_interval_s: float = 1.5  # the ESP32 not driving in AUTO: zeros again, at most this often
     goal_timeout_s: float = 0.5   # /rover/goal_active older than this: no goal is running
     linkless_limit_s: float = 0.0  # the longest AUTO may drive to its goal without the base station (0 = no limit)
+    nav_pose_max_age_s: float = 1.0  # a Nav2 costmap placing the rover with an older transform: AUTO stops (0 = off)
+    nav_pose_timeout_s: float = 3.0  # a Nav2 costmap not heard for this long: the same
     # The motors' deadband, as a wheel target in the firmware's rpm units (wheel_test --percent x MAX_WHEEL_RPM / 100):
     min_wheel_rpm_straight: float = 0.0  # where the rover just starts to roll straight ahead (0 = no correction)
     min_wheel_rpm_spin: float = 0.0  # where it just starts to turn in place (skid steer needs much more)
@@ -100,6 +106,7 @@ def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometr
 
 
 ESP32_DRIVING = 'DRIVING'  # the ESP32 state, as drive_node reports it, in which it follows commands
+NAV_COSTMAPS = ('local', 'global')  # Nav2's costmaps: the controller's and the planner's, one process each
 DRIVE_STATE_MAX_AGE_S = 3.0  # drive_node reports once a second; an older report says nothing about now
 
 
@@ -121,6 +128,7 @@ class DriveMux:
         self._motion_ref: tuple[float, float, float] | None = None
         self._drive_state: str | None = None
         self._drive_state_time = 0.0
+        self._nav_pose: dict[str, tuple[float, float]] = {}  # per costmap: (the age of its pose of the rover, when heard)
         self._estop: bool | None = None  # the base station's e-stop, as last heard
         self._estop_time: float | None = None
         self._goal_active = False
@@ -158,6 +166,11 @@ class DriveMux:
             return
         if self._motion_ref is None or self._moved(self._motion_ref, self._odom):
             self._motion_ref, self._motion_since = self._odom, now
+
+    def on_nav_pose(self, costmap: str, age_s: float, now: float) -> None:
+        """A Nav2 costmap's footprint. Nav2 publishes it with every costmap update, stamped with the time of the
+        transform it placed the rover with: `age_s` is how old that transform was when the footprint arrived."""
+        self._nav_pose[costmap] = (age_s, now)
 
     def on_drive_state(self, esp32_state: str, now: float) -> None:
         """The ESP32's state from drive_node's /diagnostics (about once a second)."""
@@ -265,6 +278,15 @@ class DriveMux:
     def _find_fault(self, now: float) -> str:
         if self._odom_time is None or now - self._odom_time > self.config.odometry_timeout_s:
             return 'no odometry from the camera'
+        if self.config.nav_pose_max_age_s > 0:
+            for costmap in NAV_COSTMAPS:
+                report = self._nav_pose.get(costmap)
+                if report is None or now - report[1] > self.config.nav_pose_timeout_s:
+                    return f"Nav2's {costmap} costmap is not heard (Nav2 not running yet, or stuck)"
+                if report[0] > self.config.nav_pose_max_age_s:
+                    # No age in the text: it grows, and the text is logged and published whenever it changes.
+                    return (f"Nav2's {costmap} costmap has lost track of the rover: the transforms it works with have "
+                            "stopped. Restart the rover's launch")
         timeout = self.config.no_motion_timeout_s
         if timeout > 0 and self._motion_since is not None and now - self._motion_since > timeout:
             return (f'the rover has not moved for {timeout:g} s although commanded (odometry frozen, wheels stuck, or '

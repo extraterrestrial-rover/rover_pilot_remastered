@@ -22,12 +22,18 @@ class Run:
     def __init__(self, config: MuxConfig = MuxConfig()) -> None:
         self.mux, self.now, self.x = DriveMux(config, ROVER), 0.0, 0.0
 
-    def step(self, seconds, *, auto=True, estop=False, command=(0.4, 0.0), odometry='moving', goal=True):
+    def step(self, seconds, *, auto=True, estop=False, command=(0.4, 0.0), odometry='moving', goal=True, nav_age=None):
         """Returns the last output. auto None: the base station is silent. odometry: 'moving', 'frozen' (the same
-        pose again) or None (nothing arrives). goal: what goal_manager reports (None: it is silent too)."""
+        pose again) or None (nothing arrives). goal: what goal_manager reports (None: it is silent too). nav_age: how
+        old the pose is that Nav2's costmaps report, e.g. {'local': 30.0} (the others 0.05 s; a value None: that
+        costmap is silent)."""
         out = None
         for _ in range(round(seconds / 0.02)):
             self.now += 0.02
+            for costmap in ('local', 'global'):
+                age = (nav_age or {}).get(costmap, 0.05)
+                if age is not None:
+                    self.mux.on_nav_pose(costmap, age, self.now)
             if auto is not None:
                 self.mux.on_mode(auto, self.now)
                 self.mux.on_estop(estop, self.now)
@@ -198,6 +204,35 @@ def test_a_motion_command_without_motion_stops_auto():
     assert off.step(10.0, odometry='frozen') == (0.4, 0.0)  # 0 turns the check off
 
 
+@pytest.mark.parametrize('costmap', ['local', 'global'])
+def test_auto_stops_when_a_nav2_costmap_has_lost_track_of_the_rover(costmap):
+    # On the rover the local costmap's transforms stopped (a tf2 deadlock) 70 s before a goal. Nav2 then steered from
+    # that old position, with a costmap that took in no new obstacles, and the mux passed its commands on: the
+    # camera's odometry was fine, and the rover moved.
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(1.0) == (0.4, 0.0)
+    assert run.step(0.1, nav_age={costmap: 0.9}) == (0.4, 0.0)  # a slow update is not a loss
+    assert run.step(0.02, nav_age={costmap: 1.5}) == (0.0, 0.0)
+    fault = run.mux.fault
+    assert f"Nav2's {costmap} costmap has lost track" in fault and 'AUTO stopped' in run.mux.state
+    assert run.step(1.0, nav_age={costmap: 70.0}) == (0.0, 0.0) and run.mux.fault == fault  # one text: one log line
+    assert run.step(0.6, nav_age={costmap: 70.0}, goal=False) == (0.0, 0.0) and run.mux.fault == fault  # no new goals
+    assert run.step(0.1, goal=False) == (0.0, 0.0) and run.mux.fault == ''  # the costmap is back: ready again
+    assert run.step(0.1) == (0.4, 0.0)
+
+
+def test_auto_does_not_drive_while_a_nav2_costmap_is_silent():
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(0.1, nav_age={'global': None}) == (0.0, 0.0)  # never heard: Nav2 is not up yet
+    assert "Nav2's global costmap is not heard" in run.mux.fault
+    assert run.step(0.1, goal=False) == (0.0, 0.0) and run.mux.fault == ''
+    assert run.step(1.0) == (0.4, 0.0)
+    assert run.step(2.9, nav_age={'local': None}) == (0.4, 0.0)  # the global costmap reports once a second: 3 s of grace
+    assert run.step(0.2, nav_age={'local': None}) == (0.0, 0.0) and "Nav2's local costmap is not heard" in run.mux.fault
+    off = Run(MuxConfig(neutral_hold_s=0.0, nav_pose_max_age_s=0.0))
+    assert off.step(1.0, nav_age={'local': 70.0, 'global': None}) == (0.4, 0.0)  # 0 turns the check off
+
+
 def test_turning_on_the_spot_counts_as_motion():
     run = Run(MuxConfig(neutral_hold_s=0.0))
     for step in range(300):  # 6 s of turning: only the heading changes
@@ -207,6 +242,8 @@ def test_turning_on_the_spot_counts_as_motion():
         run.mux.on_goal_active(True, run.now)
         run.mux.on_auto_command(0.0, 0.5, run.now)
         run.mux.on_odometry(0.0, 0.0, math.remainder(0.01 * step, 2 * math.pi), run.now)
+        run.mux.on_nav_pose('local', 0.05, run.now)
+        run.mux.on_nav_pose('global', 0.05, run.now)
         assert run.mux.output(run.now) == (0.0, 0.5)
 
 
