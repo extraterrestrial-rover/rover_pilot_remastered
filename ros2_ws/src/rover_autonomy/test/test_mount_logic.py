@@ -21,7 +21,7 @@ def ground_seen(height, pitch_deg=0.0, roll_deg=0.0, wall_at=None, noise=0.005, 
     pitch, roll = math.radians(pitch_deg), math.radians(roll_deg)
     pitch_matrix = np.array([[math.cos(pitch), 0, math.sin(pitch)], [0, 1, 0], [-math.sin(pitch), 0, math.cos(pitch)]])
     roll_matrix = np.array([[1, 0, 0], [0, math.cos(roll), -math.sin(roll)], [0, math.sin(roll), math.cos(roll)]])
-    return world @ (pitch_matrix @ roll_matrix)  # camera = R^T . world, written for row vectors
+    return np.einsum('ij,jk->ik', world, np.einsum('ij,jk->ik', pitch_matrix, roll_matrix))  # camera = R^T . world, for row vectors
 
 
 @pytest.mark.parametrize('height, pitch, roll', [(0.6, 0.0, 0.0), (0.6, 10.0, 0.0), (0.45, -4.0, 0.0), (0.8, 15.0, 3.0),

@@ -40,7 +40,8 @@ def fit_ground(points: np.ndarray, tolerance_m: float = 0.03, iterations: int = 
             normal = -normal
         if normal[2] < upright:
             continue
-        on_plane = np.abs((points - a) @ normal) <= tolerance_m
+        # einsum, not @: macOS' BLAS raises floating-point warnings on a plain matrix product of this shape.
+        on_plane = np.abs(np.einsum('ij,j->i', points - a, normal)) <= tolerance_m
         if best is None or on_plane.sum() > best.sum():
             best = on_plane
     if best is None or best.sum() < MIN_POINTS:
@@ -50,7 +51,7 @@ def fit_ground(points: np.ndarray, tolerance_m: float = 0.03, iterations: int = 
     normal = np.linalg.svd(ground - centre, full_matrices=False)[2][-1]  # the direction the points spread least in
     if normal[2] < 0:
         normal = -normal
-    height = float(-normal @ centre)
+    height = float(-np.dot(normal, centre))
     if normal[2] < upright or height <= 0:
         return None
     return normal, height, float(best.sum() / len(points))
