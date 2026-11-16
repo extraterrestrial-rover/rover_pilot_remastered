@@ -67,9 +67,11 @@ def test_the_costmaps_do_not_tell_ground_from_obstacles_by_height():
 
 def test_the_ground_is_told_by_its_direction_alone():
     """RTAB-Map's Grid/MaxGroundHeight does two things: the ground is taken only if it begins below it, and every
-    obstacle point below it is dropped. At 0.1 m, a rover tilted 5 degrees nose down saw no ground at all (the nearest
-    ground in view is above 0.1 m then), and every level surface in view, the floor, became an obstacle. At 0.3 m, a
-    0.3 m stake or plank was no obstacle any more: in the lab neither reached the costmaps. 0 switches both off."""
+    obstacle point below it is dropped. At 0.1 m, with the rover tilted 9 degrees nose down (or the camera pitched
+    down that much more than its setting says), the nearest ground in view is above 0.1 m: RTAB-Map then put 390 of
+    the 512 floor cells before a box into its map as obstacles (none at 5 degrees). At 0.3 m, a 0.3 m stake or plank
+    was no obstacle any more: in the lab neither reached the costmaps. 0 switches both off: no floor cell occupied
+    at 12 degrees, and the stake and the plank are obstacles."""
     for parameters in (stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db'), stack_config.obstacle_parameters(SETTINGS)):
         assert float(parameters['Grid/MaxGroundHeight']) == 0.0
         assert float(parameters['Grid/MinGroundHeight']) <= -1.0  # and a tilt the other way does not hide the ground

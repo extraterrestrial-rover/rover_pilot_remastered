@@ -136,10 +136,11 @@ def segmentation_parameters(settings: dict[str, Any]) -> dict[str, str]:
     obstacle if at least obstacle_min_points points of it hang together. Heights are from base_footprint.
 
     Grid/MaxGroundHeight stays 0 (off). It does two things at once: the ground is taken only if it begins below it,
-    and every obstacle point below it is dropped. Set to min_obstacle_height_m (0.1), a rover tilted 5 degrees nose
-    down sees no ground at all, because the nearest ground in view is above 0.1 m then, and the whole floor becomes
-    an obstacle. Set higher, low obstacles vanish. The costmaps leave out what is lower than min_obstacle_height_m
-    themselves (their obstacle source's height window)."""
+    and every obstacle point below it is dropped. Set to min_obstacle_height_m (0.1), a rover tilted 9 degrees nose
+    down, or a camera pitched down that much more than zed_pitch_rad says, has no ground left: the nearest ground in
+    view is above 0.1 m then, and the floor goes into the map as an obstacle (in the lab, 390 of the 512 cells before
+    a box at 9 degrees; none with 0, also at 12). Set higher, low obstacles vanish. The costmaps leave out what is
+    lower than min_obstacle_height_m themselves (their obstacle source's height window)."""
     return {
         'Grid/NormalsSegmentation': 'true',
         'Grid/MaxGroundAngle': f'{settings["max_ground_slope_deg"]:g}',
