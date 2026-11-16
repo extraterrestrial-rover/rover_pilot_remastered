@@ -110,6 +110,7 @@ def test_rtabmap_and_urdf_follow_the_settings():
     assert rtabmap['Reg/Force3DoF'] == 'true' and all(isinstance(v, (str, bool, int, float)) for v in rtabmap.values())
     assert rtabmap['Grid/Sensor'] == '1' and 'Grid/FromDepth' not in rtabmap  # renamed in RTAB-Map 0.21
     assert float(rtabmap['GridGlobal/MinSize']) >= 20.0  # room to plan beyond what has been mapped
+    assert rtabmap['approx_sync'] is False  # colour and depth of the same frame, never of neighbouring ones
     urdf = stack_config.urdf_mappings(SETTINGS, 0.28)
     assert urdf['wheel_radius'] == '0.14' and urdf['zed_name'] == 'zed'
 

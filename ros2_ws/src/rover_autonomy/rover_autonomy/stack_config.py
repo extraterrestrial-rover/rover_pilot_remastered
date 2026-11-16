@@ -105,9 +105,12 @@ def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any
         'subscribe_depth': True,
         'subscribe_rgb': True,
         'subscribe_odom_info': False,
-        'approx_sync': True,
-        'sync_queue_size': 30,
-        'topic_queue_size': 30,
+        # The ZED stamps a colour image, its depth image and its camera info with the same time: pair them by exactly
+        # that time (as RTAB-Map's own ZED example does). Pairing by nearest time puts the depth of one frame on the
+        # colour of another whenever a message is lost, and at 7.4 MB a pair they are.
+        'approx_sync': False,
+        'sync_queue_size': 10,
+        'topic_queue_size': 10,
         'qos_image': 2,  # best effort: receives from the ZED whatever its QoS
         'qos_camera_info': 2,
         'wait_for_transform': 0.5,

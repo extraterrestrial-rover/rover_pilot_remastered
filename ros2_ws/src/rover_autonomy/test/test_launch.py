@@ -42,6 +42,12 @@ def test_the_zed_odometry_never_resets():
     assert tracking['publish_tf'] is False and tracking['publish_map_tf'] is False
 
 
+def test_the_zed_does_not_flood_the_computer_with_images():
+    """The wrapper's default publishes 1280 x 720 colour and depth at the camera's 60 Hz; RTAB-Map uses 1 Hz."""
+    general = yaml.safe_load((PACKAGE / 'config' / 'zed_override.yaml').read_text())['/**']['ros__parameters']['general']
+    assert 1.0 <= general['pub_frame_rate'] <= 15.0
+
+
 def test_drive_node_listens_to_the_mux():
     assert "SetRemap(src='/cmd_vel', dst='/cmd_vel_drive')" in SOURCE
     # ... for its e-stop too: the mux passes the base station's on, and holds it released only while a goal is

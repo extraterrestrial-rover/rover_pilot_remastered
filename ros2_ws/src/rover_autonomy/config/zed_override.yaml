@@ -2,6 +2,12 @@
 # settings: what this stack depends on, whatever the wrapper's defaults are.
 /**:
   ros__parameters:
+    general:
+      # Colour and depth images, for RTAB-Map, which takes one pair a second. The wrapper's default (0.0) publishes
+      # as fast as the camera grabs, 60 Hz: each 1280 x 720 pair is 7.4 MB, so hundreds of MB/s were copied between
+      # processes for nothing, on the computer that also runs Nav2. The odometry (every grab) and the point cloud
+      # (depth.point_cloud_freq) have their own rates and are not affected.
+      pub_frame_rate: 15.0
     pos_tracking:
       # The odometry must be continuous: the EKF and the costmaps place everything with it, and RTAB-Map corrects the
       # map frame on loop closures. The wrapper's default resets its odometry to the start on each loop closure, which
