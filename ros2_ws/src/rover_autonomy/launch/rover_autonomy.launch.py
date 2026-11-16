@@ -26,7 +26,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetRemap
 
-from rover_autonomy import stack_config
+from rover_autonomy import stack_config, system_checks
 from rover_pilot_remastered.kinematics import DriveGeometry
 
 # Remaps that keep Nav2 off /cmd_vel and RViz's /goal_pose (tested in test/test_launch.py).
@@ -45,6 +45,14 @@ NAV2_NODES = (  # (package, executable, remappings), all managed by lifecycle_ma
 def remove(path: str) -> None:
     with contextlib.suppress(OSError):
         os.unlink(path)
+
+
+def installed_version(package: str) -> str:
+    """The version of an installed ROS package ('' if it is not there)."""
+    try:
+        return system_checks.package_version((Path(get_package_share_directory(package)) / 'package.xml').read_text())
+    except (PackageNotFoundError, OSError):
+        return ''
 
 
 def flag(context, name: str) -> bool:
@@ -75,6 +83,9 @@ def launch_setup(context):
     stack_config.write_yaml(nav2, nav2_file)
     atexit.register(remove, nav2_file)  # one file per run, gone with the launch
     actions = [LogInfo(msg=f'AUTO: up to {speed:g} m/s and {turn_rate:g} rad/s; Nav2 parameters in {nav2_file}')]
+    tf2_problem = system_checks.tf2_problem(installed_version('tf2'), installed_version('tf2_ros'))
+    if tf2_problem:
+        actions.append(LogInfo(msg=f'WARNING: {tf2_problem}'))
 
     if flag(context, 'zed'):
         try:

@@ -53,3 +53,10 @@ def test_lifecycle_manager_manages_every_nav2_node():
     template = yaml.safe_load((PACKAGE / 'config' / 'nav2_params.yaml').read_text())
     managed = template['lifecycle_manager_navigation']['ros__parameters']['node_names']
     assert managed == [executable for _, executable, _ in constant('NAV2_NODES')]
+
+
+def test_the_launch_checks_the_installed_tf2():
+    """tf2 0.25.23 deadlocks Nav2's costmaps (system_checks): the launch says so instead of leaving it to be found
+    in the field."""
+    assert "system_checks.tf2_problem(installed_version('tf2'), installed_version('tf2_ros'))" in SOURCE
+    assert "LogInfo(msg=f'WARNING: {tf2_problem}')" in SOURCE
