@@ -28,6 +28,7 @@ setup(
             'drive_mux = rover_autonomy.drive_mux:main',
             'goal_manager = rover_autonomy.goal_manager:main',
             'zed_odometry = rover_autonomy.zed_odometry:main',
+            'mount_check = rover_autonomy.mount_check:main',
         ],
     },
 )

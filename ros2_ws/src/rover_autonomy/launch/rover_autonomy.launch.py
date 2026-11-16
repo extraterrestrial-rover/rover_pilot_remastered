@@ -105,6 +105,9 @@ def launch_setup(context):
                                      mappings=stack_config.urdf_mappings(settings, wheel['wheel_diameter_m'])).toxml()
     actions.append(Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
                         parameters=[{'robot_description': description}]))
+    # Once, at the start: is the camera where autonomy.yaml says? It tells by the ground it sees, then exits.
+    actions.append(Node(package='rover_autonomy', executable='mount_check', name='mount_check', output='screen',
+                        parameters=[settings_file]))
     actions.append(Node(package='rover_autonomy', executable='zed_odometry', name='zed_odometry', output='screen',
                         respawn=True, respawn_delay=1.0, parameters=[settings_file]))  # the camera's pose -> the rover's
     actions.append(Node(package='robot_localization', executable='ekf_node', name='ekf_local', output='screen',

@@ -48,6 +48,12 @@ def test_the_zed_does_not_flood_the_computer_with_images():
     assert 1.0 <= general['pub_frame_rate'] <= 15.0
 
 
+def test_the_cameras_mount_is_checked_at_the_start():
+    """zed_z_m and zed_pitch_rad ship as placeholders, and everything the camera sees is placed with them."""
+    assert "package='rover_autonomy', executable='mount_check'" in SOURCE
+    assert 'mount_check = rover_autonomy.mount_check:main' in (PACKAGE / 'setup.py').read_text()
+
+
 def test_the_launch_prints_what_looks_wrong_in_the_settings():
     assert 'for warning in stack_config.settings_warnings(settings)' in SOURCE
 

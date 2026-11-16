@@ -320,12 +320,12 @@ class Rehearsal:
         self.pressed = set()
         time.sleep(0.15)
 
-    def goal(self, x: float, y: float, frame: str = 'map') -> None:
+    def goal(self, x: float, y: float, frame: str = 'map', yaw: float = 0.0) -> None:
         message = PoseStamped()
         message.header.frame_id = frame
         message.header.stamp = self.node.get_clock().now().to_msg()
         message.pose.position.x, message.pose.position.y = x, y
-        message.pose.orientation.w = 1.0
+        message.pose.orientation.z, message.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.goals.publish(message)
 
     def event(self, text: str, timeout: float, since: int = 0) -> bool:
@@ -468,6 +468,14 @@ class Rehearsal:
         time.sleep(3.0)
         self.check('rover tilted 4 degrees nose down (a wheel on a stone): the ground stays free, the post stays',
                    self.lethal_cells(*post) > 0 and self.lethal_cells(*ground) == 0, seen())
+        # The same tilt, seen as a camera mounted 4 degrees further down than autonomy.yaml says.
+        checked = subprocess.run(['ros2', 'run', 'rover_autonomy', 'mount_check', '--ros-args', '--params-file',
+                                  str(self.settings_file), '-p', 'timeout_s:=20.0'], capture_output=True, text=True, timeout=60,
+                                 env=dict(os.environ, ROS_DOMAIN_ID=str(self.rover_domain)))
+        report = checked.stdout + checked.stderr
+        self.check('a camera mounted 4 degrees off is reported, with the value to set',
+                   '4.0 degrees further down' in report and 'set zed_pitch_rad: 0.070' in report,
+                   ' | '.join(line.split('camera mount check: ')[-1] for line in report.splitlines() if 'mount check' in line)[:300])
         self.rover.pitch = 0.0
         time.sleep(1.0)
 
@@ -543,6 +551,20 @@ class Rehearsal:
                 os.kill(int(ekf[0]), signal.SIGCONT)
             time.sleep(3.0)
 
+        print('\n3d. Ground that needs more than the measured deadband', flush=True)
+        # The settings say 20 and 60 rpm. Here a turn on the spot needs 70: Nav2's turn commands come out at 68 at most,
+        # so without the stall kick the rover would stand at the goal and never turn to its heading.
+        self.rover.deadband = (26.0, 70.0)
+        since = len(self.events)
+        x, y, yaw = self.rover.pose()
+        ahead, about_face = (x + 0.8 * math.cos(yaw), y + 0.8 * math.sin(yaw)), yaw + math.pi
+        self.goal(*ahead, yaw=about_face)  # a short way straight ahead, then turn round on the spot
+        reached = self.event('goal reached', 90.0, since)
+        off = abs(math.remainder(self.rover.pose()[2] - about_face, 2 * math.pi))
+        self.check('the rover turns round on the spot anyway (the stall kick)', reached and off < 0.6,
+                   f'{"goal reached" if reached else self.events[since:]}, {math.degrees(off):.0f} degrees from the heading asked for; {self.where()}')
+        self.rover.deadband = TRUE_DEADBAND
+
         print('\n4. Radio lost while a goal runs: the rover goes on to its goal, then the e-stop latches', flush=True)
         since = len(self.events)
         self.goal(0.0, 3.0)
@@ -601,6 +623,11 @@ class Rehearsal:
         logs = self.base_launch.text() + self.rover_launch.text()
         self.check('both launches stop on Ctrl-C', codes == (0, 0), f'exit codes {codes}')
         self.check('no tracebacks in any launch log', 'Traceback' not in logs)
+        self.check('the mux said when it raised its output for a rover that did not start',
+                   'the rover does not start: raising the output' in self.rover_launch.text())
+        mount = [line.split('camera mount check: ')[-1] for line in self.rover_launch.text().splitlines() if 'camera mount check' in line]
+        self.check("at the start the camera's mount was checked against the ground and agreed with the settings",
+                   len(mount) == 1 and 'as the settings say' in mount[0], ' | '.join(mount)[:300] or 'no report')
         return all(ok for _, ok, _ in self.results)
 
     def close(self) -> None:
