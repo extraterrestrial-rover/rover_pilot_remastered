@@ -330,22 +330,21 @@ class DriveMux:
             return 0.0, 0.0
         if self._auto_since is None or self._needs_rearm(now):
             self._auto_since = self._last_rearm = now
+        linear_x, angular_z = self._auto_cmd if commanded else (0.0, 0.0)
         if now - self._auto_since < self.config.neutral_hold_s:
+            holding = f'{label}: neutral first'
+        elif not self._goal_running(now):
+            holding = f'{label}: no goal from goal_manager: holding still' + (' (ignoring Nav2)' if commanded else '')
+        elif not commanded:
+            holding = f'{label}: no Nav2 command: holding still'
+        elif not (math.isfinite(linear_x) and math.isfinite(angular_z)):
+            holding = f'{label}: following Nav2'
+        else:
+            holding = ''
+        if holding:
             self._motion_since = None
-            self.state = f'{label}: neutral first'
-            return 0.0, 0.0
-        if not self._goal_running(now):
-            self._motion_since = None
-            self.state = f'{label}: no goal from goal_manager: holding still' + (' (ignoring Nav2)' if commanded else '')
-            return 0.0, 0.0
-        if not commanded:
-            self._motion_since = None
-            self.state = f'{label}: no Nav2 command: holding still'
-            return 0.0, 0.0
-        linear_x, angular_z = self._auto_cmd
-        if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
-            self._motion_since = None
-            self.state = f'{label}: following Nav2'
+            self._end_kick()  # whatever is followed next starts from the measured deadband again
+            self.state = holding
             return 0.0, 0.0
         kick = self._kick(linear_x, angular_z, now)
         self.state = f'{label}: following Nav2' + (' (the rover does not start: raising the output)' if kick > 0 else '')

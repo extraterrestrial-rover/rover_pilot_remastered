@@ -293,6 +293,20 @@ def test_the_kick_stays_while_the_ground_keeps_needing_it():
     assert min(steps) > 0.02, steps  # and never stands again
 
 
+def test_the_kick_is_not_carried_from_one_goal_to_the_next():
+    run = Run(KICKED)
+    turn = (0.0, 0.2)
+    plain = fastest(*deadband_corrected(*turn, ROVER, KICKED))
+    run.step(2.5, command=turn, odometry='frozen')
+    assert run.mux.kick > 10.0
+    assert run.step(0.1, command=turn, odometry='frozen', goal=False) == (0.0, 0.0) and run.mux.kick == 0.0  # the goal ends
+    assert fastest(*run.step(0.1, command=turn, odometry='frozen')) == pytest.approx(plain)  # the next starts as measured
+    run.step(2.5, command=turn, odometry='frozen')
+    assert run.mux.kick > 10.0
+    run.step(0.4, command=None, odometry='frozen')  # Nav2 pauses (a recovery, a replan)
+    assert run.mux.kick == 0.0
+
+
 def test_the_kick_ends_in_the_fault_when_the_rover_really_is_stuck():
     run = Run(KICKED)
     out = run.step(2.9, command=(0.0, 0.2), odometry='frozen')
