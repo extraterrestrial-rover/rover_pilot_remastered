@@ -48,6 +48,10 @@ def test_the_zed_does_not_flood_the_computer_with_images():
     assert 1.0 <= general['pub_frame_rate'] <= 15.0
 
 
+def test_the_launch_prints_what_looks_wrong_in_the_settings():
+    assert 'for warning in stack_config.settings_warnings(settings)' in SOURCE
+
+
 def test_the_costmaps_get_their_clouds_from_the_obstacle_detector():
     assert "package='rtabmap_util', executable='obstacles_detection'" in SOURCE
     assert "('cloud', settings['zed_cloud_topic']), ('obstacles', stack_config.OBSTACLES_TOPIC)" in SOURCE

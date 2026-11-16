@@ -114,6 +114,17 @@ def test_nav2_waits_when_the_camera_stops_sending():
             assert 0.5 <= layer[source]['expected_update_rate'] <= 3.0, (name, source)
 
 
+def test_paths_keep_a_distance_from_obstacles():
+    """With inflation_radius_m 0.7, below the 1 x 1 m outline's reach of 0.71 m, Nav2 took the rover round the end of a
+    barrier with 13 cm to spare (in the lab; 1.0 gave 46 cm)."""
+    reach = (SETTINGS['rover_length_m'] ** 2 + SETTINGS['rover_width_m'] ** 2) ** 0.5 / 2
+    assert SETTINGS['inflation_radius_m'] >= reach + 0.25
+    assert stack_config.settings_warnings(SETTINGS) == []
+    tight = stack_config.settings_warnings(dict(SETTINGS, inflation_radius_m=0.7))
+    assert len(tight) == 1 and 'inflation_radius_m is 0.7' in tight[0] and 'Use 1.0 or more' in tight[0]
+    assert stack_config.settings_warnings(dict(SETTINGS, rover_length_m=0.6, rover_width_m=0.5, inflation_radius_m=0.7)) == []
+
+
 def test_the_whole_outline_is_checked_against_obstacles():
     critics = TEMPLATE['controller_server']['ros__parameters']['FollowPath']['critics']
     assert 'ObstacleFootprint' in critics and 'BaseObstacle' not in critics  # BaseObstacle: only the centre cell

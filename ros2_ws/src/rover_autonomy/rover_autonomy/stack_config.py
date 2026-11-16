@@ -32,6 +32,7 @@ OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles
 GROUND_START_MAX_M = 0.3
 GROUND_LOWEST_M = -1.0  # points further below the rover than this are not looked at
 VOXEL_HEIGHT_M, MAX_VOXELS = 0.1, 16  # the costmaps' voxel layer (Nav2 allows 16 voxels in a column)
+INFLATION_MARGIN_M = 0.2  # inflation_radius_m should be at least this much above the rover's reach
 
 
 def load_settings(path: str | Path) -> dict[str, Any]:
@@ -61,6 +62,17 @@ def load_settings(path: str | Path) -> dict[str, Any]:
         raise ValueError(f'{path}: rover_height_m and zed_z_m must be at most {VOXEL_HEIGHT_M * MAX_VOXELS:g} m (the '
                          "costmaps' obstacle layer reaches that high)")
     return settings
+
+
+def settings_warnings(settings: dict[str, Any]) -> list[str]:
+    """What load_settings accepts but is probably not meant: the launch prints these."""
+    warnings = []
+    reach = math.hypot(settings['rover_length_m'], settings['rover_width_m']) / 2.0  # the centre to a corner
+    if settings['inflation_radius_m'] < reach + INFLATION_MARGIN_M:
+        warnings.append(f"inflation_radius_m is {settings['inflation_radius_m']:g}, and the rover's outline reaches "
+                        f"{reach:.2f} m from its centre: Nav2 will plan paths that graze obstacles. Use "
+                        f"{reach + 0.3:.1f} or more")
+    return warnings
 
 
 def footprint(length_m: float, width_m: float) -> str:

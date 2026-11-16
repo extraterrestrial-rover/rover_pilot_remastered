@@ -11,7 +11,10 @@
     rover_length_m: 1.0          # outer length, front to back, including the wheels
     rover_width_m: 1.0           # outer width, over the wheels
     rover_height_m: 0.8          # highest point (the camera mast); taller obstacles are ignored above this
-    inflation_radius_m: 0.7      # Nav2 keeps the rover's centre this far from obstacles where it can
+    # How far from obstacles Nav2 plans the rover's centre where there is room. Keep it well above the distance from
+    # the rover's centre to a corner of its outline (0.71 m for 1 x 1 m), or paths graze obstacles: 0.7 left 13 cm
+    # at the end of a barrier, 1.0 leaves about 45.
+    inflation_radius_m: 1.0
     min_obstacle_height_m: 0.1   # obstacles lower than this are driven over (rough terrain: raise it)
     obstacle_range_m: 3.0        # the ZED's depth is used up to this distance for the costmaps
     # Ground or obstacle? Decided by the direction a surface faces, not by its height, so a tilted rover or a slope

@@ -86,6 +86,7 @@ def launch_setup(context):
     tf2_problem = system_checks.tf2_problem(installed_version('tf2'), installed_version('tf2_ros'))
     if tf2_problem:
         actions.append(LogInfo(msg=f'WARNING: {tf2_problem}'))
+    actions += [LogInfo(msg=f'WARNING: {settings_file}: {warning}') for warning in stack_config.settings_warnings(settings)]
 
     if flag(context, 'zed'):
         try:
