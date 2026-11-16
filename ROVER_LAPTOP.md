@@ -115,7 +115,12 @@ sudo apt install -y ros-humble-ros-base python3-colcon-common-extensions python3
     ros-humble-xacro ros-humble-robot-state-publisher
 sudo rosdep init                    # "already initialized" is fine
 rosdep update
+dpkg -s ros-humble-tf2-ros | grep Version
 ```
+
+The last line must not say 0.25.23: that tf2 release (in ROS Humble's packages from 2026-09-14 to 2026-10-12)
+deadlocks inside Nav2 within a minute or so. On a laptop installed in those weeks, upgrade both tf2 packages:
+`sudo apt update && sudo apt install --only-upgrade 'ros-humble-tf2*'`.
 
 ## 5. ZED ROS 2 wrapper
 
@@ -251,7 +256,7 @@ cd ~/rover_pilot_remastered/ros2_ws/src/rover_pilot_remastered && python3 -m pyt
 cd ../rover_autonomy && python3 -m pytest -q -p no:launch_testing -p no:launch_ros test
 cd ~/rover_pilot_remastered
 python3 tools/rehearsal.py                            # the bench test, about 1 minute
-python3 tools/rehearsal_auto.py                       # AUTO with the real Nav2, about 6 minutes
+python3 tools/rehearsal_auto.py                       # AUTO with the real Nav2, about 8 minutes
 ```
 
 The tests and both rehearsals release the e-stop and drive at full speed, so none of them uses your shell's
@@ -271,7 +276,8 @@ ros2 topic hz /zed/zed_node/odom                      # about 15 to 30 Hz
 
 Measure and fill in `ros2_ws/src/rover_autonomy/config/autonomy.yaml` (AUTONOMY.md, "Before the first run"):
 - the rover's size;
-- the ZED's mount;
+- the ZED's mount. Each launch then checks its height and pitch against the ground the camera sees: start on flat
+  ground with open floor ahead, and look for the `camera mount check:` lines;
 - the ZED topic names from step 10;
 - the deadband, with `tools/wheel_test.py`, wheels on the ground. It ships as 0.0 (not measured): AUTO then works,
   but the rover may not move at Nav2's slow commands, and AUTO stops itself after 3 s without motion.
@@ -316,6 +322,10 @@ A launch started outside tmux dies with the SSH session.
 | ZED not found, or `CAMERA STREAM FAILED TO START` | not on a USB 3 port, a hub in between, or the cable; `lsusb \| grep -i 2b03` |
 | The base station sees no rover topics | same `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` on both; Wi-Fi off; `ping` works; neither sets `ROS_LOCALHOST_ONLY=1` |
 | The radios lose each other when the autonomy stack starts; heartbeats come and go ("base station not heard") | ROS data goes out as multicast: `~/cyclonedds.xml` with `AllowMulticast` `spdp` and `CYCLONEDDS_URI` on **both** machines (step 6); the launch warns when it is missing |
+| Nav2's log repeats `Transform data too old when converting from map to odom`; AUTO stops with "Nav2's … costmap has lost track of the rover" | tf2 0.25.23 is installed (step 4): `sudo apt update && sudo apt install --only-upgrade 'ros-humble-tf2*'`. The launch warns about it at the start |
+| `camera mount check:` warns at the start | the camera's height or pitch differs from `autonomy.yaml`: set the printed values and rebuild (the rover must stand on flat ground for the check) |
+| AUTO stops with "no obstacle data from the camera" | the ZED's point cloud stopped, or `obstacles_detection` is not running (`ros2 topic hz /rover/obstacles`) |
+| A run went wrong and the console doesn't say why | record the next one: `tools/record_run.sh <name>` (AUTONOMY.md, "When a run goes wrong") |
 | The launch ended when SSH dropped | it ran outside tmux: always `tmux new -A -s rover` first |
 | The laptop went to sleep in the rover | step 9: check `grep HandleLidSwitch /etc/systemd/logind.conf` and that the masks are in place |
 | ZED wrapper build killed | not enough memory: `colcon build … --parallel-workers 1` |

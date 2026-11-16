@@ -20,20 +20,33 @@ RViz "2D Goal Pose" ─/goal_pose─▶ goal_manager ──────┘ │  
                                       ▼                  │
                                      Nav2 ─/cmd_vel_auto─┘
 ZED 2i ─odom─▶ zed_odometry ─▶ EKF (odom→base_footprint) ─▶ RTAB-Map (map→odom, /map) ─▶ Nav2
-       └─point cloud─────────────────────────────────────────────────────────▶ Nav2's costmaps
+       └─point cloud─▶ obstacles_detection ─/rover/obstacles, /rover/ground──▶ Nav2's costmaps
 ```
 
 - **`drive_mux`** decides what reaches `drive_node`:
   - the sticks' `/cmd_vel` in manual, passed on as each command arrives;
   - Nav2's `/cmd_vel_auto` in AUTO, and only for a goal `goal_manager` sent. It sends zeros for 0.3 s first, and again
     whenever `drive_node` reports that the ESP32 is not driving, because the ESP32 drives again only after a neutral
-    command. It corrects Nav2's commands for the motors' deadband ("Before the first run", step 5);
+    command. It corrects Nav2's commands for the motors' deadband ("Before the first run", step 5), and when the
+    rover stands for a second although commanded, it raises its output until the rover moves (the stall kick);
   - the base station's e-stop, passed on the moment it arrives. Only while the base station is silent does the mux
     decide the e-stop itself (table below).
 
-  It also **stops AUTO by itself**, and the goal is cancelled, when it cannot know where the rover is: no odometry from
-  the camera for 0.5 s, or a motion command for 3 s without the odometry moving (tracking lost, wheels stuck, deadband
-  set too low). `ros2 topic echo /rover/auto_fault` says why.
+  It also **stops AUTO by itself**, and the goal is cancelled, when the rover would drive blind:
+  - no odometry from the camera for 0.5 s;
+  - a motion command for 3 s without the odometry moving (tracking lost, wheels stuck);
+  - no obstacle data from the camera for 1 s (its point cloud or `obstacles_detection` stopped);
+  - one of Nav2's two costmaps has lost track of the rover: the transform it places the rover with is over 1 s old,
+    or the costmap is not heard for 3 s. Each costmap keeps its own copy of the transforms, and such a copy can
+    stop ("Known limits", tf2).
+
+  `ros2 topic echo /rover/auto_fault` says why.
+- **`obstacles_detection`** (RTAB-Map's) splits the ZED's point cloud into ground and obstacles by the direction
+  each surface faces, not by its height: a tilted rover or a slope ahead doesn't become a wall of obstacles. Nav2's
+  costmaps take those two clouds into a voxel layer, which keeps and clears obstacles in 3D, so a low obstacle stays
+  when the camera, close to it, looks over it.
+- **`mount_check`** runs once at the start: it fits the ground in the camera's first point clouds and compares the
+  camera's real height and tilt with `zed_z_m` and `zed_pitch_rad`. If they differ it prints the values to set.
 - **`goal_manager`** passes RViz goals to Nav2, only in AUTO with the e-stop released, fixed in the map frame when
   they arrive. Nav2's own `/goal_pose` subscription is remapped away, and goals sent to Nav2 any other way are
   ignored by the mux, so a click can't bypass it. It tells the mux whether a goal runs (`/rover/goal_active`).
@@ -67,7 +80,7 @@ example why one was ignored.
 | Radio or base station lost **while a goal runs** | The rover **goes on to its goal** and stops there. If the base station is still not heard then, the e-stop is latched | radio back: the e-stop is released again (still in AUTO); click the next goal |
 | Radio or base station lost in manual, or in AUTO without a goal | The rover stops (about 0.5 s, as on `main`) | radio back: drive again (after a stop, centre the sticks) |
 | Base station heard again after an outage, in e-stop or manual (restarted, or you pressed Circle or took the sticks) | The goal is cancelled and the rover stops | |
-| No odometry, or no motion although commanded (see `drive_mux` above) | AUTO stops itself; the goal is cancelled | find the cause (`/rover/auto_fault`), then a new goal |
+| No odometry, no motion although commanded, no obstacle data, or Nav2 has lost track of the rover (see `drive_mux` above) | AUTO stops itself; the goal is cancelled | find the cause (`/rover/auto_fault`), then a new goal |
 | Circle, a stick, or Triangle | Goal cancelled for good | |
 
 **While a goal runs without the base station, nothing at the base station can stop the rover:** not Circle, not a
@@ -111,7 +124,13 @@ footprint, the camera's position and the deadband all come from there. Rebuild a
 1. **The rover's size**: `rover_length_m` and `rover_width_m` over the wheels, `rover_height_m` to the highest point.
 2. **The ZED's mount**, measured from the ground point midway between the four wheels to the middle of the camera's
    underside (the tripod screw): forward `zed_x_m`, left `zed_y_m`, height `zed_z_m`, and `zed_pitch_rad` if it
-   looks down (positive). Check it in RViz: with `TF` on, the point cloud of a wall must stand where the wall is.
+   looks down (positive). Everything the camera sees is placed with these: a pitch 3° off puts the ground 2 m ahead
+   10 cm too high or too low. So the launch checks height and pitch each time it starts, with the rover standing on
+   flat ground and open floor in view. Look for the `camera mount check:` lines: either "as the settings say", or
+   the values to put into `autonomy.yaml`. To run the check alone:
+   ```bash
+   ros2 run rover_autonomy mount_check --ros-args --params-file ros2_ws/src/rover_autonomy/config/autonomy.yaml
+   ```
 3. **The ZED's topics**: with the camera running, `ros2 topic list | grep zed_node`. Wrapper versions name the colour
    image differently (`rgb/color/rect/image` or `rgb/image_rect_color`); copy what you see into the `zed_*_topic`
    settings.
@@ -130,6 +149,11 @@ footprint, the camera's position and the deadband all come from there. Rebuild a
    itself after 3 s ("no motion"). Too high is worse than too low (it drives and turns faster than Nav2 asked), and a
    value above 80 % of `max_wheel_rpm` is refused as a unit mistake. Each side of the rover gets the correction on
    its own, so arcs keep their shape.
+
+   Ground differs, so the measured value is only right where you measured it. When the rover stands for 1 s although
+   Nav2 commands it, or crawls at under half of what was asked, `drive_mux` raises the deadband by up to 20 rpm. It
+   keeps the extra while the ground needs it and takes it back when the rover runs faster than commanded (the log
+   says "the rover does not start: raising the output"). If you see that often, measure again on that ground.
 
 ## Daily workflow
 
@@ -166,8 +190,10 @@ run. Both are checked against the rover's top speed (1.39 m/s with the 28 cm whe
 |---|---|---|
 | `auto_max_speed`, `auto_max_turn_rate` | 0.5 m/s, 0.8 rad/s | AUTO's limits (Nav2's controller, smoother, recoveries) |
 | `rover_length_m`, `rover_width_m`, `rover_height_m` | placeholders | the footprint; points higher than the rover are ignored |
-| `inflation_radius_m` | 0.7 | how far Nav2 keeps the rover's centre from obstacles where it can |
-| `min_obstacle_height_m` | 0.1 | lower points count as ground (raise it on rough ground if Nav2 sees obstacles everywhere) |
+| `inflation_radius_m` | 1.0 | how far Nav2 plans the rover's centre from obstacles where there is room; keep it at least 0.2 m above the distance from the centre to a corner of the outline (the launch warns) |
+| `min_obstacle_height_m` | 0.1 | obstacles lower than this are driven over (the costmaps leave them out; the map still shows them) |
+| `max_ground_slope_deg` | 45 | a surface steeper than this is an obstacle, anything flatter is ground |
+| `obstacle_min_points` | 10 | an obstacle needs this many points 5 cm apart; fewer is noise (lower it for thin stakes) |
 | `obstacle_range_m` | 3.0 | how far the depth image marks obstacles (the ZED's depth gets noisy beyond) |
 | `zed_x_m` … `zed_pitch_rad` | placeholders | the camera's mount (the URDF and `zed_odometry` use it) |
 | `zed_*_topic` | wrapper 5.x names | the ZED's topics, and `zed_status_topic` its tracking status (`''` = not checked) |
@@ -176,12 +202,17 @@ run. Both are checked against the rover's top speed (1.39 m/s with the 28 cm whe
 | `drive_mux`: `neutral_hold_s` | 0.3 | zeros first when AUTO starts, and when the ESP32 is not driving (`rearm_interval_s` 1.5) |
 | `drive_mux`: `mode_timeout_s` | 0.5 | base station silent this long: lost |
 | `drive_mux`: `odometry_timeout_s`, `no_motion_timeout_s` | 0.5, 3.0 | AUTO stops itself (no odometry; no motion although commanded, 0 = not checked) |
+| `drive_mux`: `obstacle_timeout_s` | 1.0 | AUTO stops itself: no obstacle cloud from the camera (0 = not checked) |
+| `drive_mux`: `nav_pose_max_age_s`, `nav_pose_timeout_s` | 1.0, 3.0 | AUTO stops itself: a Nav2 costmap works with a transform older than this, or is not heard (0 = not checked) |
+| `drive_mux`: `stall_kick_delay_s`, `stall_kick_rpm_per_s`, `stall_kick_max_rpm` | 1.0, 12, 20 | the stall kick: standing (or crawling) this long although commanded, the deadband is raised this fast, by at most this much (rate 0 = never) |
 | `drive_mux`: `linkless_limit_s` | 0.0 (no limit) | the longest a goal may run without the base station |
 | `goal_manager`: `link_timeout_s` | 0.5 | base station silent this long: lost (the goal goes on) |
 
 Everything else Nav2 uses is in `config/nav2_params.yaml` (Humble's names; the values marked "from autonomy.yaml" are
 overwritten at launch). The launch prints where the final parameter file is (removed when the launch ends). What the
-ZED wrapper must do differently from its defaults is in `config/zed_override.yaml`.
+ZED wrapper must do differently from its defaults is in `config/zed_override.yaml`: no odometry resets, and colour
+and depth images at 15 Hz instead of the camera's 60 (RTAB-Map takes one pair a second; at 60 Hz that was hundreds
+of MB/s copied between processes).
 
 ## Frames and topics
 
@@ -202,6 +233,8 @@ place what the camera sees with it, and RTAB-Map corrects the `map` frame instea
 | `/rover/auto_fault` | drive_mux → goal_manager, you: why AUTO stopped itself (empty while it has not) |
 | `/zed/zed_node/odom` → `/zed/odom_base` | ZED (camera pose) → zed_odometry (rover pose) → EKF |
 | `/zed/zed_node/pose/status` | ZED → zed_odometry: whether it tracks |
+| `/zed/zed_node/point_cloud/cloud_registered` → `/rover/obstacles`, `/rover/ground` | ZED → obstacles_detection → Nav2's costmaps, drive_mux (that they keep coming) |
+| `/local_costmap/published_footprint`, `/global_costmap/published_footprint` | Nav2 → drive_mux: how old the transform is that each costmap places the rover with |
 | `/odometry/filtered` | EKF → Nav2 |
 | `/map` | RTAB-Map → Nav2's global costmap, RViz |
 | `/rover/autonomy_events` | goal_manager → you |
@@ -210,24 +243,53 @@ place what the camera sees with it, and RTAB-Map corrects the `map` frame instea
 
 ```bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-python3 tools/rehearsal_auto.py      # about 6 minutes; PASS/FAIL table, exit code 1 on any failure
+python3 tools/rehearsal_auto.py      # about 8 minutes; PASS/FAIL table, exit code 1 on any failure
 ```
 
 The rehearsal runs the real launch files, Nav2 included, against the simulated ESP32. It simulates the rover's motion
-with a deadband on each side's motors, publishes it as the ZED's odometry, and puts a post in front of the rover. The
-base station runs in its own ROS domain behind a relay, so the script can cut the "radio". Both domains are its own
-(61, 62), and it refuses to start next to another node in either. It checks:
+with a deadband on each side's motors and publishes it as the ZED's odometry. The ZED's point cloud is ray-cast with
+the camera's field of view: flat ground and a post in front of the rover, so the obstacle detector and the costmaps
+work on a real view. The base station runs in its own ROS domain behind a relay, so the script can cut the "radio".
+Both domains are its own (61, 62), and it refuses to start next to another node in either. It checks:
 
 - goals are taken only in AUTO, are fixed in the map when given in a moving frame, and Nav2 goals sent around
   `goal_manager` don't move the rover;
+- the post is in the costmap and the ground before it is free, also with the rover tilted 4°; a camera mounted 4° off
+  is reported with the value to set;
 - Nav2 drives around the post and the EKF's pose matches the simulated rover;
+- AUTO stops when the point cloud stops, and when Nav2's transforms stop (the EKF frozen);
+- on ground that needs more than the measured deadband the rover still starts (the stall kick);
 - radio loss while a goal runs: the rover goes on to its goal, then the e-stop latches until the radio is back;
 - a base-station restart while a goal runs: the rover goes on until the restarted base station (e-stopped) is heard,
   then stops, and the goal is gone;
 - Circle and a stick take over;
 - nothing but the base station publishes `/cmd_vel`, and `drive_node` takes its e-stop from the mux.
 
-No camera or RTAB-Map runs in it (`zed:=false slam:=false`).
+No camera or RTAB-Map runs in it (`zed:=false slam:=false`). It needs `rtabmap_util` (part of
+`ros-humble-rtabmap-ros`) for the obstacle detector.
+
+## When a run goes wrong
+
+Record it, so there is more to go by than the console:
+
+```bash
+tools/record_run.sh barrier-test          # on the rover laptop, in a second tmux window; Ctrl-C stops it
+```
+
+It writes `~/rover_runs/<date>-barrier-test/`: a rosbag of the commands at every stage, poses, transforms, Nav2's
+plans and costmaps, the obstacle clouds, the events and faults; the launch log; and the installed package versions.
+That is tens of MB a minute. `--cloud` adds the ZED's raw point cloud, about 1 GB a minute: use it for a minute when
+the question is what counts as an obstacle. When the map is the problem, copy `~/.ros/rover_map.db` along.
+
+What to look at first:
+
+| Seen | Look at |
+|---|---|
+| The goal was cancelled | `ros2 topic echo /rover/autonomy_events` and `/rover/auto_fault`: the reason is in words |
+| Obstacles where there are none, or the map's floor full of them | the `camera mount check:` lines of the launch (step 2 above); in RViz the "Obstacles" cloud shows what Nav2 avoids |
+| A real obstacle is not in the costmap | lower than `min_obstacle_height_m`, or too few points (`obstacle_min_points`), or beyond `obstacle_range_m` |
+| Nav2's log repeats `Transform data too old` | `/rover/auto_fault` says which costmap lost track; check the tf2 version ("Known limits") |
+| The rover passes too close to things | `inflation_radius_m` |
 
 ## Branches
 
@@ -260,6 +322,11 @@ in.
   costmaps can then get things in the wrong place until the ZED tracks again.
 - Speeds are open loop. With the deadband measured, AUTO's speeds are roughly right; uphill they're lower. Nav2 corrects
   from the odometry.
+- The stall kick helps a rover that does not start straight ahead or on the spot. It lifts no command more than
+  20 rpm above the deadband for that command, so in a tight arc on ground that needs much more than measured the
+  rover can still stand; AUTO then stops after 3 s ("has not moved"). It is tested in simulation only: if the rover
+  lurches when it starts, switch it off with `stall_kick_rpm_per_s: 0.0` and record a run with it on
+  (`tools/record_run.sh`).
 - RViz over the radio: the costmaps and the map are a few hundred kB/s. The ZED point cloud display is off by default
   for this reason.
 - **Multicast must stay off the radio** (README, setup step 4: `AllowMulticast` `spdp` on both machines). Otherwise
@@ -267,6 +334,14 @@ in.
   as the stack starts. The launch prints a warning when the setting is missing.
 - Don't use the Nav2 RViz panel or another action client: it sends goals around `goal_manager`, which the mux
   ignores, so they do nothing (Nav2 still plans them).
-- The costmaps clear what has gone with a second pass over the ZED's point cloud (`zed_ground`). It doubles that
-  work for the CPU; if Nav2's controller falls behind (`Control loop missed its desired rate` in its log), lower the
-  ZED's point cloud rate or resolution in `config/zed_override.yaml`.
+- **tf2 0.25.23 freezes Nav2.** ROS Humble's packages from 2026-09-14 to 2026-10-12 carry tf2 0.25.23, which
+  deadlocks inside Nav2's costmaps within a minute or so (fixed in 0.25.24). The costmap then gets no transforms:
+  Nav2 steers from an old position, and its log repeats `Transform data too old when converting from map to odom`.
+  The launch warns when that version is installed, and AUTO stops itself when a costmap loses track. Check with
+  `dpkg -s ros-humble-tf2-ros | grep Version`; fix with
+  `sudo apt update && sudo apt install --only-upgrade 'ros-humble-tf2*'` (both `tf2` and `tf2_ros`).
+- What counts as an obstacle is decided by shape: a surface steeper than `max_ground_slope_deg` with at least
+  `obstacle_min_points` points. A thin stake has few points and is seen later than a wall; holes and drops are not
+  seen at all. In the costmaps, obstacles lower than `min_obstacle_height_m` are left out; that height is taken
+  from where the rover stands, so on a tilted rover it is off by a few cm per metre of distance.
+- The mount check assumes flat ground at the start. On a slope, or facing a wall, its warning means nothing.
