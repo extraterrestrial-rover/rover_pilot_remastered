@@ -26,10 +26,6 @@ OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before th
     'obstacle_min_points': 10,
 }
 OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles_detection's clouds, for the costmaps
-# The ground must begin below this height for RTAB-Map's segmentation to take it as the ground. Too low, and a tilt of
-# the rover (or a camera pitch setting that is off) lifts the nearest ground over it: the whole floor then counts as
-# an obstacle. At 0.1 m that took a 5 degree tilt.
-GROUND_START_MAX_M = 0.3
 GROUND_LOWEST_M = -1.0  # points further below the rover than this are not looked at
 VOXEL_HEIGHT_M, MAX_VOXELS = 0.1, 16  # the costmaps' voxel layer (Nav2 allows 16 voxels in a column)
 INFLATION_MARGIN_M = 0.2  # inflation_radius_m should be at least this much above the rover's reach
@@ -137,13 +133,19 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
 def segmentation_parameters(settings: dict[str, Any]) -> dict[str, str]:
     """How RTAB-Map's code tells ground from obstacles in the camera's points, for the map (rtabmap) and for the
     costmaps (obstacles_detection) alike: a surface facing up within max_ground_slope_deg is ground, the rest is an
-    obstacle if at least obstacle_min_points points of it hang together. Heights are from base_footprint."""
+    obstacle if at least obstacle_min_points points of it hang together. Heights are from base_footprint.
+
+    Grid/MaxGroundHeight stays 0 (off). It does two things at once: the ground is taken only if it begins below it,
+    and every obstacle point below it is dropped. Set to min_obstacle_height_m (0.1), a rover tilted 5 degrees nose
+    down sees no ground at all, because the nearest ground in view is above 0.1 m then, and the whole floor becomes
+    an obstacle. Set higher, low obstacles vanish. The costmaps leave out what is lower than min_obstacle_height_m
+    themselves (their obstacle source's height window)."""
     return {
         'Grid/NormalsSegmentation': 'true',
         'Grid/MaxGroundAngle': f'{settings["max_ground_slope_deg"]:g}',
         'Grid/MinClusterSize': str(settings['obstacle_min_points']),
         'Grid/MinGroundHeight': f'{GROUND_LOWEST_M:g}',
-        'Grid/MaxGroundHeight': f'{GROUND_START_MAX_M:g}',
+        'Grid/MaxGroundHeight': '0',
         'Grid/MaxObstacleHeight': f'{settings["rover_height_m"]:g}',
         # The rover's own parts in the camera's view (a wheel, the nose, when it is tilted down) are not obstacles.
         'Grid/FootprintLength': f'{settings["rover_length_m"]:g}',

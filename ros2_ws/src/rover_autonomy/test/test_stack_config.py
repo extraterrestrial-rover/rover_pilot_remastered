@@ -65,13 +65,17 @@ def test_the_costmaps_do_not_tell_ground_from_obstacles_by_height():
     assert all(isinstance(value, str) for key, value in detector.items() if key.startswith('Grid/'))  # RTAB-Map's own
 
 
-def test_a_tilt_does_not_turn_the_whole_floor_into_an_obstacle():
-    """RTAB-Map's segmentation takes the ground only if it begins below Grid/MaxGroundHeight. That was 0.1 m: with the
-    rover 5 degrees nose down the nearest ground the camera sees is above it, and every flat surface in view, the
-    floor, went into the map (and would go into the costmaps) as an obstacle."""
+def test_the_ground_is_told_by_its_direction_alone():
+    """RTAB-Map's Grid/MaxGroundHeight does two things: the ground is taken only if it begins below it, and every
+    obstacle point below it is dropped. At 0.1 m, a rover tilted 5 degrees nose down saw no ground at all (the nearest
+    ground in view is above 0.1 m then), and every level surface in view, the floor, became an obstacle. At 0.3 m, a
+    0.3 m stake or plank was no obstacle any more: in the lab neither reached the costmaps. 0 switches both off."""
     for parameters in (stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db'), stack_config.obstacle_parameters(SETTINGS)):
-        assert float(parameters['Grid/MaxGroundHeight']) >= 0.3
+        assert float(parameters['Grid/MaxGroundHeight']) == 0.0
         assert float(parameters['Grid/MinGroundHeight']) <= -1.0  # and a tilt the other way does not hide the ground
+    # What is too low to matter is left out by the costmaps instead, in their obstacle source's height window.
+    costmap = build(min_obstacle_height_m=0.15)['local_costmap']['local_costmap']['ros__parameters']
+    assert costmap['obstacle_layer']['obstacles']['min_obstacle_height'] == 0.15
     # The map and the costmaps tell ground from obstacles in the same way.
     shared = stack_config.segmentation_parameters(SETTINGS)
     assert shared.items() <= stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db').items()
