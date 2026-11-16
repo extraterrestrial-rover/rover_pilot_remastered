@@ -22,14 +22,17 @@ class Run:
     def __init__(self, config: MuxConfig = MuxConfig()) -> None:
         self.mux, self.now, self.x = DriveMux(config, ROVER), 0.0, 0.0
 
-    def step(self, seconds, *, auto=True, estop=False, command=(0.4, 0.0), odometry='moving', goal=True, nav_age=None):
+    def step(self, seconds, *, auto=True, estop=False, command=(0.4, 0.0), odometry='moving', goal=True, nav_age=None,
+             obstacles=True):
         """Returns the last output. auto None: the base station is silent. odometry: 'moving', 'frozen' (the same
         pose again) or None (nothing arrives). goal: what goal_manager reports (None: it is silent too). nav_age: how
         old the pose is that Nav2's costmaps report, e.g. {'local': 30.0} (the others 0.05 s; a value None: that
-        costmap is silent)."""
+        costmap is silent). obstacles: whether the obstacle detector's clouds arrive."""
         out = None
         for _ in range(round(seconds / 0.02)):
             self.now += 0.02
+            if obstacles:
+                self.mux.on_obstacles(self.now)
             for costmap in ('local', 'global'):
                 age = (nav_age or {}).get(costmap, 0.05)
                 if age is not None:
@@ -221,6 +224,19 @@ def test_auto_stops_when_a_nav2_costmap_has_lost_track_of_the_rover(costmap):
     assert run.step(0.1) == (0.4, 0.0)
 
 
+def test_auto_does_not_drive_without_obstacle_data():
+    # The camera's point cloud can stop while its odometry goes on (or the detector between it and the costmaps
+    # dies): the costmaps then keep what they last saw, and Nav2 drives by it.
+    run = Run(MuxConfig(neutral_hold_s=0.0))
+    assert run.step(0.1, obstacles=False) == (0.0, 0.0) and 'no obstacle data' in run.mux.fault  # none yet
+    assert run.step(0.1, goal=False) == (0.0, 0.0) and run.mux.fault == ''
+    assert run.step(1.0) == (0.4, 0.0)
+    assert run.step(0.98, obstacles=False) == (0.4, 0.0)  # the cloud comes 10 times a second: a gap is not a loss
+    assert run.step(0.06, obstacles=False) == (0.0, 0.0) and 'no obstacle data from the camera' in run.mux.fault
+    off = Run(MuxConfig(neutral_hold_s=0.0, obstacle_timeout_s=0.0))
+    assert off.step(3.0, obstacles=False) == (0.4, 0.0)  # 0 turns the check off
+
+
 def test_auto_does_not_drive_while_a_nav2_costmap_is_silent():
     run = Run(MuxConfig(neutral_hold_s=0.0))
     assert run.step(0.1, nav_age={'global': None}) == (0.0, 0.0)  # never heard: Nav2 is not up yet
@@ -244,6 +260,7 @@ def test_turning_on_the_spot_counts_as_motion():
         run.mux.on_odometry(0.0, 0.0, math.remainder(0.01 * step, 2 * math.pi), run.now)
         run.mux.on_nav_pose('local', 0.05, run.now)
         run.mux.on_nav_pose('global', 0.05, run.now)
+        run.mux.on_obstacles(run.now)
         assert run.mux.output(run.now) == (0.0, 0.5)
 
 

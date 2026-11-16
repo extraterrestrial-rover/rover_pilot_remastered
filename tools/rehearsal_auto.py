@@ -8,7 +8,9 @@ RViz-style goals, and checks where the rover ends up. Stand-ins, all in this pro
   - the rover's motion: the ESP32's PWM integrated with a deadband on each side's motors, a little below the one
     the rehearsal's autonomy settings give drive_mux (as a measured value would be), published as the ZED's
     odometry (the camera's pose, as the ZED wrapper reports it);
-  - the ZED's point cloud: a post at (2.5, 0) in the map, seen from the camera up to 3 m;
+  - the ZED's point cloud: flat ground and a post at (2.5, 0) in the map, ray-cast from the camera with the ZED 2i's
+    field of view (110 x 70 degrees), so it goes through the real obstacle detector and costmaps; the rover can be
+    tilted without the software knowing (a wheel on a stone);
   - RTAB-Map: an identity map -> odom and an empty 30 m x 30 m /map;
   - the radio: the base station runs in its own ROS domain, and this script relays its three topics (/cmd_vel,
     /rover/estop, /rover/auto) to the rover's domain; "radio lost" stops the relay;
@@ -24,6 +26,7 @@ Needs ROS 2 Humble with Nav2 and robot_localization (AUTONOMY.md, "Install"), th
 from __future__ import annotations
 
 import argparse
+import array
 import math
 import os
 import signal
@@ -39,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'ros2_ws' / 'src'
 sys.path.insert(0, str(SRC / 'rover_pilot_remastered'))
 
+import numpy as np  # noqa: E402
 import rclpy  # noqa: E402
 import yaml  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist  # noqa: E402
@@ -64,7 +68,8 @@ TELEOP = yaml.safe_load((PILOT / 'drive.yaml').read_text())['base_teleop']['ros_
 CIRCLE, OPTIONS, TRIANGLE = TELEOP['estop_button'], TELEOP['release_button'], TELEOP['auto_button']
 STOPPED = (0, 0, 0, 0)
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
-POST, POST_RADIUS = (2.5, 0.0), 0.25  # the obstacle, in the map frame
+POST, POST_RADIUS, POST_HEIGHT = (2.5, 0.0), 0.25, 0.6  # the obstacle (a square post), in the map frame
+CLOUD_SIZE = (160, 90)  # points across and down: enough for the obstacle detector, light enough for this script
 # The deadband (straight, on the spot) in wheel rpm: what the rehearsal's settings tell drive_mux, and what the
 # simulated motors really have. autonomy.yaml itself ships 0.0 (not measured), which would leave the correction untested.
 CONFIGURED_DEADBAND = (20.0, 60.0)
@@ -88,7 +93,15 @@ class Rover:
         self.esp, self.geometry = esp, geometry
         self.mount = (SETTINGS['zed_x_m'], SETTINGS['zed_y_m'])
         self.x, self.y, self.yaw = -self.mount[0], -self.mount[1], 0.0  # base_footprint
+        self.pitch = 0.0  # the rover's real tilt, nose down positive, which nothing in the software knows about
+        self.deadband = TRUE_DEADBAND  # what the motors need on the ground the rover stands on
         self.lock = threading.Lock()
+        # The camera's rays, in its own frame (x forward, y left, z up): the ZED 2i's 110 x 70 degree view.
+        across = (np.arange(CLOUD_SIZE[0]) + 0.5 - CLOUD_SIZE[0] / 2) / (CLOUD_SIZE[0] / 2) * math.tan(math.radians(55.0))
+        down = (np.arange(CLOUD_SIZE[1]) + 0.5 - CLOUD_SIZE[1] / 2) / (CLOUD_SIZE[1] / 2) * math.tan(math.radians(35.0))
+        grid_across, grid_down = np.meshgrid(across, down)
+        rays = np.stack([np.ones_like(grid_across), -grid_across, -grid_down], axis=-1).reshape(-1, 3)
+        self.rays = rays / np.linalg.norm(rays, axis=1, keepdims=True)
 
     def step(self, dt: float) -> None:
         state = self.esp.state()
@@ -102,7 +115,7 @@ class Rover:
         # Each side's motors turn only above their deadband, then about linearly up to full speed. Turning on the
         # spot scrubs the tyres, so the deadband is higher the more of the motion is turning.
         spin_share = abs(right - left) / (abs(left + right) + abs(right - left))
-        deadband = TRUE_DEADBAND[0] + (TRUE_DEADBAND[1] - TRUE_DEADBAND[0]) * spin_share
+        deadband = self.deadband[0] + (self.deadband[1] - self.deadband[0]) * spin_share
 
         def turns(target: float) -> float:
             if abs(target) <= deadband:
@@ -126,17 +139,30 @@ class Rover:
         mx, my = self.mount
         return x + mx * math.cos(yaw) - my * math.sin(yaw), y + mx * math.sin(yaw) + my * math.cos(yaw), yaw
 
-    def post_points(self) -> list[tuple[float, float, float]]:
-        """The post as the camera sees it (x forward, z up, from the camera), within 3 m and a 110 degree view."""
+    def sees(self) -> np.ndarray:
+        """What the camera sees: the ground and the post, as points (x, y, z, rgb; float32) in the camera's frame, one
+        per ray, NaN where a ray meets nothing between 0.3 and 15 m (the sky). The rover's tilt tilts the camera."""
         cx, cy, yaw = self.camera()
-        points = []
-        for i in range(24):
-            angle = 2 * math.pi * i / 24
-            px, py = POST[0] + POST_RADIUS * math.cos(angle), POST[1] + POST_RADIUS * math.sin(angle)
-            dx, dy = px - cx, py - cy
-            forward, left = dx * math.cos(yaw) + dy * math.sin(yaw), -dx * math.sin(yaw) + dy * math.cos(yaw)
-            if forward > 0.3 and math.hypot(forward, left) < 3.0 and abs(math.atan2(left, forward)) < math.radians(55):
-                points += [(forward, left, height - SETTINGS['zed_z_m']) for height in (0.2, 0.35, 0.5)]
+        pitch = SETTINGS['zed_pitch_rad'] + self.pitch
+        cos_yaw, sin_yaw, cos_pitch, sin_pitch = math.cos(yaw), math.sin(yaw), math.cos(pitch), math.sin(pitch)
+        rotation = np.array([[cos_yaw * cos_pitch, -sin_yaw, cos_yaw * sin_pitch],
+                             [sin_yaw * cos_pitch, cos_yaw, sin_yaw * sin_pitch],
+                             [-sin_pitch, 0.0, cos_pitch]])
+        world = self.rays @ rotation.T
+        origin = (cx, cy, SETTINGS['zed_z_m'])
+        box = ((POST[0] - POST_RADIUS, POST[0] + POST_RADIUS), (POST[1] - POST_RADIUS, POST[1] + POST_RADIUS), (0.0, POST_HEIGHT))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            distance = np.where(world[:, 2] < -1e-9, -origin[2] / world[:, 2], np.inf)  # the ground
+            near, far = np.full(len(world), -np.inf), np.full(len(world), np.inf)
+            for axis in range(3):
+                first, second = (box[axis][0] - origin[axis]) / world[:, axis], (box[axis][1] - origin[axis]) / world[:, axis]
+                near, far = np.maximum(near, np.minimum(first, second)), np.minimum(far, np.maximum(first, second))
+            hit = (far >= near) & (near > 0)
+            distance = np.where(hit & (near < distance), near, distance)
+        seen = (distance >= 0.3) & (distance <= 15.0)
+        points = np.full((len(distance), 4), np.nan, dtype=np.float32)
+        points[seen, :3] = (self.rays[seen] * distance[seen, None]).astype(np.float32)
+        points[seen, 3] = 0.0
         return points
 
     def distance_to(self, x: float, y: float) -> float:
@@ -144,14 +170,15 @@ class Rover:
         return math.hypot(rx - x, ry - y)
 
 
-def cloud(points, frame: str, stamp) -> PointCloud2:
+def cloud(points: np.ndarray, frame: str, stamp) -> PointCloud2:
+    """An organized cloud like the ZED's: x, y, z, rgb as float32, NaN where there is no point."""
     message = PointCloud2()
     message.header.frame_id, message.header.stamp = frame, stamp
-    message.height, message.width = 1, len(points)
-    message.fields = [PointField(name=name, offset=4 * i, datatype=PointField.FLOAT32, count=1) for i, name in enumerate('xyz')]
-    message.is_bigendian, message.point_step, message.is_dense = False, 12, True
-    message.row_step = 12 * len(points)
-    message.data = b''.join(struct.pack('<fff', *point) for point in points)
+    message.width, message.height = CLOUD_SIZE
+    message.fields = [PointField(name=name, offset=4 * i, datatype=PointField.FLOAT32, count=1) for i, name in enumerate(('x', 'y', 'z', 'rgb'))]
+    message.is_bigendian, message.point_step, message.is_dense = False, 16, False
+    message.row_step = 16 * message.width
+    message.data = array.array('B', points.tobytes())  # an array: rclpy checks a bytes object one byte at a time
     return message
 
 
@@ -194,6 +221,8 @@ class Rehearsal:
         self.rover = Rover(self.esp, geometry_for(wheels))
         self.events: list[str] = []
         self.radio = True
+        self.cloud_on = True  # False: the camera's point cloud stops (its odometry goes on)
+        self.costmap: OccupancyGrid | None = None  # Nav2's local costmap, as RViz gets it
         self.left_y = 0.0
         self.pressed: set[int] = set()
         self.rover_launch: Launch | None = None
@@ -217,6 +246,8 @@ class Rehearsal:
                                                                             reliability=ReliabilityPolicy.RELIABLE))
         self.goals = node.create_publisher(PoseStamped, '/goal_pose', 10)
         node.create_subscription(String, '/rover/autonomy_events', lambda m: self.events.append(m.data), 50)
+        node.create_subscription(OccupancyGrid, '/local_costmap/costmap', lambda m: setattr(self, 'costmap', m),
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
         self.static_tf = StaticTransformBroadcaster(node)
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, node)
@@ -272,8 +303,8 @@ class Rehearsal:
             for index in (0, 7, 14, 21, 28, 35):
                 message.pose.covariance[index] = 1e-4
             self.odom.publish(message)
-        if self.ticks % 10 == 0:  # the point cloud, 5 Hz
-            self.points.publish(cloud(self.rover.post_points(), f"{SETTINGS['zed_camera_name']}_camera_link", stamp))
+        if self.ticks % 10 == 0 and self.cloud_on:  # the point cloud, 5 Hz
+            self.points.publish(cloud(self.rover.sees(), f"{SETTINGS['zed_camera_name']}_camera_link", stamp))
 
     def publish_joy(self) -> None:
         message = Joy()
@@ -337,6 +368,21 @@ class Rehearsal:
         time.sleep(seconds)
         end = self.rover.pose()
         return math.hypot(end[0] - start[0], end[1] - start[1]) < 0.02 and abs(end[2] - start[2]) < 0.02
+
+    def lethal_cells(self, x0: float, x1: float, y0: float, y1: float) -> int:
+        """How many cells of the local costmap in this rectangle of the map are obstacles themselves (not the
+        inflation around one); -1 without a costmap."""
+        grid = self.costmap
+        if grid is None:
+            return -1
+        info, count = grid.info, 0
+        for row in range(info.height):
+            y = info.origin.position.y + (row + 0.5) * info.resolution
+            if y0 <= y <= y1:
+                for column in range(info.width):
+                    x = info.origin.position.x + (column + 0.5) * info.resolution
+                    count += x0 <= x <= x1 and grid.data[row * info.width + column] == 100
+        return count
 
     def where(self) -> str:
         x, y, yaw = self.rover.pose()
@@ -410,6 +456,21 @@ class Rehearsal:
         auto = sorted(info.node_name for info in self.node.get_publishers_info_by_topic('/cmd_vel_auto'))
         self.check("Nav2's output reaches the mux through the velocity smoother only", auto == ['velocity_smoother'], str(auto))
 
+        print('\n1b. What the costmap makes of the camera\'s view', flush=True)
+        post = (POST[0] - POST_RADIUS - 0.1, POST[0] + POST_RADIUS + 0.1, POST[1] - POST_RADIUS - 0.1, POST[1] + POST_RADIUS + 0.1)
+        ground = (0.7, POST[0] - POST_RADIUS - 0.4, -1.5, 1.5)  # between the rover and the post
+
+        def seen() -> str:
+            return f'{self.lethal_cells(*post)} obstacle cells on the post, {self.lethal_cells(*ground)} on the open ground before it'
+        self.check('the post is in the local costmap and the ground before it is free',
+                   self.lethal_cells(*post) > 0 and self.lethal_cells(*ground) == 0, seen())
+        self.rover.pitch = math.radians(4.0)
+        time.sleep(3.0)
+        self.check('rover tilted 4 degrees nose down (a wheel on a stone): the ground stays free, the post stays',
+                   self.lethal_cells(*post) > 0 and self.lethal_cells(*ground) == 0, seen())
+        self.rover.pitch = 0.0
+        time.sleep(1.0)
+
         print('\n2. Goals only in AUTO', flush=True)
         self.left_y = 0.0
         time.sleep(0.2)
@@ -458,6 +519,29 @@ class Rehearsal:
         if handle is not None and handle.accepted:
             handle.cancel_goal_async()
         time.sleep(1.0)
+
+        print('\n3c. AUTO stops when the camera or Nav2 can no longer see', flush=True)
+        since = len(self.events)
+        self.goal(0.0, -3.0)
+        time.sleep(4.0)
+        self.cloud_on = False  # the camera's point cloud stops; its odometry goes on
+        self.check("the point cloud stops: the goal is cancelled and the rover stands",
+                   self.event('goal cancelled: no obstacle data from the camera', 5.0, since) and self.holds_still(2.0))
+        self.cloud_on = True
+        time.sleep(2.0)
+        since = len(self.events)
+        self.goal(0.0, -3.0)
+        self.check('the point cloud is back: the next goal is driven', self.event('goal accepted', 3.0, since) and self.moves(4.0))
+        ekf = subprocess.run(['pgrep', '-s', str(self.rover_launch.process.pid), '-f', 'robot_localization/ekf_node'],
+                             capture_output=True, text=True).stdout.split()
+        if self.check('found the EKF to freeze', len(ekf) == 1, f'pids {ekf}'):
+            os.kill(int(ekf[0]), signal.SIGSTOP)  # Nav2's transforms stop arriving, as when its own copy of them froze
+            try:
+                self.check("Nav2's transforms stop: the goal is cancelled and the rover stands",
+                           self.event('has lost track of the rover', 6.0, since) and self.holds_still(2.0))
+            finally:
+                os.kill(int(ekf[0]), signal.SIGCONT)
+            time.sleep(3.0)
 
         print('\n4. Radio lost while a goal runs: the rover goes on to its goal, then the e-stop latches', flush=True)
         since = len(self.events)

@@ -14,6 +14,8 @@ AUTO stops itself (zeros, and a fault that goal_manager cancels the goal on) whe
   - no odometry from the camera for odometry_timeout_s (unplugged, its node gone, tracking lost);
   - a motion command for no_motion_timeout_s without the odometry moving (odometry frozen, wheels stuck, or the
     deadband set too low for the motors to turn);
+  - no obstacle data from the camera for obstacle_timeout_s (its point cloud, or the detector that splits it into
+    ground and obstacles, has stopped): Nav2 would go on with the obstacles it last saw;
   - Nav2 itself no longer knows: one of its costmaps places the rover with a transform older than
     nav_pose_max_age_s, or is not heard at all. Each costmap has its own copy of the transforms, and a copy can
     stop (tf2 0.25.23 deadlocks there): Nav2 then steers from the last position it knew, and takes in no new
@@ -48,6 +50,7 @@ class MuxConfig:
     rearm_interval_s: float = 1.5  # the ESP32 not driving in AUTO: zeros again, at most this often
     goal_timeout_s: float = 0.5   # /rover/goal_active older than this: no goal is running
     linkless_limit_s: float = 0.0  # the longest AUTO may drive to its goal without the base station (0 = no limit)
+    obstacle_timeout_s: float = 1.0  # no obstacle cloud from the camera for this long: AUTO stops (0 = not checked)
     nav_pose_max_age_s: float = 1.0  # a Nav2 costmap placing the rover with an older transform: AUTO stops (0 = off)
     nav_pose_timeout_s: float = 3.0  # a Nav2 costmap not heard for this long: the same
     # The motors' deadband, as a wheel target in the firmware's rpm units (wheel_test --percent x MAX_WHEEL_RPM / 100):
@@ -129,6 +132,7 @@ class DriveMux:
         self._drive_state: str | None = None
         self._drive_state_time = 0.0
         self._nav_pose: dict[str, tuple[float, float]] = {}  # per costmap: (the age of its pose of the rover, when heard)
+        self._obstacle_time: float | None = None
         self._estop: bool | None = None  # the base station's e-stop, as last heard
         self._estop_time: float | None = None
         self._goal_active = False
@@ -166,6 +170,10 @@ class DriveMux:
             return
         if self._motion_ref is None or self._moved(self._motion_ref, self._odom):
             self._motion_ref, self._motion_since = self._odom, now
+
+    def on_obstacles(self, now: float) -> None:
+        """A cloud from the obstacle detector: it sends one for every point cloud of the camera, empty or not."""
+        self._obstacle_time = now
 
     def on_nav_pose(self, costmap: str, age_s: float, now: float) -> None:
         """A Nav2 costmap's footprint. Nav2 publishes it with every costmap update, stamped with the time of the
@@ -278,6 +286,9 @@ class DriveMux:
     def _find_fault(self, now: float) -> str:
         if self._odom_time is None or now - self._odom_time > self.config.odometry_timeout_s:
             return 'no odometry from the camera'
+        limit = self.config.obstacle_timeout_s
+        if limit > 0 and (self._obstacle_time is None or now - self._obstacle_time > limit):
+            return 'no obstacle data from the camera (its point cloud, or the obstacle detector, has stopped)'
         if self.config.nav_pose_max_age_s > 0:
             for costmap in NAV_COSTMAPS:
                 report = self._nav_pose.get(costmap)

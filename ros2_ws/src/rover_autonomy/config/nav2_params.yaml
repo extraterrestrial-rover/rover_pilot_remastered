@@ -1,5 +1,5 @@
 # Nav2 (Humble) for the rover. The launch file fills in the values marked "from autonomy.yaml" (speed, turn rate,
-# outline, obstacle heights and range, the ZED's point cloud, the behaviour tree's path): edit those there.
+# outline, obstacle heights and range, the behaviour tree's path): edit those there.
 # Frames: map (RTAB-Map) -> odom (EKF) -> base_footprint. No AMCL or map_server: RTAB-Map provides /map and map->odom.
 # Every Nav2 velocity output is remapped by the launch file: controller and behaviours -> cmd_vel_nav ->
 # velocity_smoother -> /cmd_vel_auto -> drive_mux. Nav2 never publishes /cmd_vel.
@@ -140,32 +140,45 @@ local_costmap:
       footprint: '[[0.5, 0.5], [0.5, -0.5], [-0.5, -0.5], [-0.5, 0.5]]'  # from autonomy.yaml
       plugins: [obstacle_layer, inflation_layer]
       obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
+        # A voxel layer: obstacles are kept and cleared in 3D, in cells 10 cm high up to the rover's height. Cleared
+        # in 2D, a low obstacle was erased as soon as the camera, close to it, looked over it to the ground behind.
+        plugin: nav2_costmap_2d::VoxelLayer
         enabled: true
-        # zed marks obstacles. zed_ground only clears: rays to every point the camera sees, the ground included, so
-        # what has gone (a person who walked away) is cleared in open ground too; zed alone clears only in front of
-        # other obstacles.
-        observation_sources: zed zed_ground
-        zed:
-          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+        origin_z: 0.0
+        z_resolution: 0.1
+        z_voxels: 10                 # from autonomy.yaml: up to the rover's height, and above the camera
+        max_obstacle_height: 1.0     # from autonomy.yaml
+        mark_threshold: 0
+        unknown_threshold: 15
+        publish_voxel_map: false
+        # The ZED's cloud comes through obstacles_detection (started by the launch file), which tells ground from
+        # obstacles by the direction the surfaces face. A height limit alone turned the ground ahead into a wall of
+        # obstacles whenever the rover tilted 3 degrees, or the camera's pitch setting was that far off.
+        # obstacles marks, and clears in front of what it sees. ground only clears, down to the ground, so what
+        # has gone (a person who walked away) is cleared in open ground too.
+        observation_sources: obstacles ground
+        obstacles:
+          topic: /rover/obstacles
           data_type: PointCloud2
           marking: true
           clearing: true
-          min_obstacle_height: 0.1   # from autonomy.yaml
-          max_obstacle_height: 0.8   # from autonomy.yaml
+          min_obstacle_height: 0.1   # from autonomy.yaml: what is lower is driven over
+          max_obstacle_height: 1.0   # from autonomy.yaml
           obstacle_max_range: 3.0    # from autonomy.yaml
           obstacle_min_range: 0.0
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
-        zed_ground:
-          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+          expected_update_rate: 1.5  # s without a cloud: Nav2 waits instead of planning and driving on what it had
+        ground:
+          topic: /rover/ground
           data_type: PointCloud2
           marking: false
           clearing: true
-          min_obstacle_height: -1.0  # the ground and anything above it
-          max_obstacle_height: 0.8   # from autonomy.yaml
+          min_obstacle_height: -1.0  # the ground, wherever a tilt puts it
+          max_obstacle_height: 1.0   # from autonomy.yaml
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
+          expected_update_rate: 1.5
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
@@ -188,32 +201,45 @@ global_costmap:
         plugin: nav2_costmap_2d::StaticLayer
         map_subscribe_transient_local: true  # RTAB-Map's /map
       obstacle_layer:
-        plugin: nav2_costmap_2d::ObstacleLayer
+        # A voxel layer: obstacles are kept and cleared in 3D, in cells 10 cm high up to the rover's height. Cleared
+        # in 2D, a low obstacle was erased as soon as the camera, close to it, looked over it to the ground behind.
+        plugin: nav2_costmap_2d::VoxelLayer
         enabled: true
-        # zed marks obstacles. zed_ground only clears: rays to every point the camera sees, the ground included, so
-        # what has gone (a person who walked away) is cleared in open ground too; zed alone clears only in front of
-        # other obstacles.
-        observation_sources: zed zed_ground
-        zed:
-          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+        origin_z: 0.0
+        z_resolution: 0.1
+        z_voxels: 10                 # from autonomy.yaml: up to the rover's height, and above the camera
+        max_obstacle_height: 1.0     # from autonomy.yaml
+        mark_threshold: 0
+        unknown_threshold: 15
+        publish_voxel_map: false
+        # The ZED's cloud comes through obstacles_detection (started by the launch file), which tells ground from
+        # obstacles by the direction the surfaces face. A height limit alone turned the ground ahead into a wall of
+        # obstacles whenever the rover tilted 3 degrees, or the camera's pitch setting was that far off.
+        # obstacles marks, and clears in front of what it sees. ground only clears, down to the ground, so what
+        # has gone (a person who walked away) is cleared in open ground too.
+        observation_sources: obstacles ground
+        obstacles:
+          topic: /rover/obstacles
           data_type: PointCloud2
           marking: true
           clearing: true
-          min_obstacle_height: 0.1   # from autonomy.yaml
-          max_obstacle_height: 0.8   # from autonomy.yaml
+          min_obstacle_height: 0.1   # from autonomy.yaml: what is lower is driven over
+          max_obstacle_height: 1.0   # from autonomy.yaml
           obstacle_max_range: 3.0    # from autonomy.yaml
           obstacle_min_range: 0.0
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
-        zed_ground:
-          topic: /zed/zed_node/point_cloud/cloud_registered  # from autonomy.yaml
+          expected_update_rate: 1.5  # s without a cloud: Nav2 waits instead of planning and driving on what it had
+        ground:
+          topic: /rover/ground
           data_type: PointCloud2
           marking: false
           clearing: true
-          min_obstacle_height: -1.0  # the ground and anything above it
-          max_obstacle_height: 0.8   # from autonomy.yaml
+          min_obstacle_height: -1.0  # the ground, wherever a tilt puts it
+          max_obstacle_height: 1.0   # from autonomy.yaml
           raytrace_max_range: 3.5    # from autonomy.yaml
           raytrace_min_range: 0.0
+          expected_update_rate: 1.5
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0

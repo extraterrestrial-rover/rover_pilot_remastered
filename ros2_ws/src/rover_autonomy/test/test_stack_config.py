@@ -32,30 +32,86 @@ def test_auto_speed_and_turn_rate_reach_every_nav2_limit():
     assert TEMPLATE['controller_server']['ros__parameters']['FollowPath']['max_vel_x'] == 0.5  # template untouched
 
 
-def test_the_outline_and_the_zed_reach_both_costmaps():
-    params = build(rover_length_m=1.2, rover_width_m=0.9, rover_height_m=0.7, zed_cloud_topic='/cloud',
-                   obstacle_range_m=2.5, min_obstacle_height_m=0.15, inflation_radius_m=0.8)
+def test_the_outline_and_the_obstacles_reach_both_costmaps():
+    params = build(rover_length_m=1.2, rover_width_m=0.9, rover_height_m=0.7, obstacle_range_m=2.5,
+                   min_obstacle_height_m=0.15, inflation_radius_m=0.8)
     for name in ('local_costmap', 'global_costmap'):
         costmap = params[name][name]['ros__parameters']
         assert yaml.safe_load(costmap['footprint']) == [[0.6, 0.45], [0.6, -0.45], [-0.6, -0.45], [-0.6, 0.45]]
         assert costmap['inflation_layer']['inflation_radius'] == 0.8
-        zed = costmap['obstacle_layer']['zed']
-        assert (zed['topic'], zed['min_obstacle_height'], zed['max_obstacle_height']) == ('/cloud', 0.15, 0.7)
-        assert zed['obstacle_max_range'] == 2.5 and zed['raytrace_max_range'] == 3.0
+        obstacles = costmap['obstacle_layer']['obstacles']
+        assert obstacles['topic'] == stack_config.OBSTACLES_TOPIC and obstacles['marking'] and obstacles['clearing']
+        assert (obstacles['min_obstacle_height'], obstacles['max_obstacle_height']) == (0.15, 0.7)
+        assert obstacles['obstacle_max_range'] == 2.5 and obstacles['raytrace_max_range'] == 3.0
         assert costmap['robot_base_frame'] == 'base_footprint'
+
+
+def test_the_costmaps_do_not_tell_ground_from_obstacles_by_height():
+    """They took the ZED's whole cloud and called every point above 0.1 m an obstacle. With the rover tilted 3 degrees
+    nose down (braking, a wheel on a stone) or the camera's pitch setting that far off, the ground 2 m ahead is above
+    0.1 m: in the lab that put 616 lethal cells on open ground in the local costmap, 1816 at 5 degrees. They now get
+    the clouds of obstacles_detection, which decides by the direction a surface faces."""
+    params = build()
+    for name in ('local_costmap', 'global_costmap'):
+        layer = params[name][name]['ros__parameters']['obstacle_layer']
+        topics = {layer[source]['topic'] for source in layer['observation_sources'].split()}
+        assert topics == {stack_config.OBSTACLES_TOPIC, stack_config.GROUND_TOPIC}
+        assert SETTINGS['zed_cloud_topic'] not in topics
+    detector = stack_config.obstacle_parameters(dict(SETTINGS, max_ground_slope_deg=30.0, obstacle_min_points=6,
+                                                     rover_height_m=0.7, obstacle_range_m=2.5))
+    assert detector['Grid/NormalsSegmentation'] == 'true' and detector['frame_id'] == 'base_footprint'
+    assert (detector['Grid/MaxGroundAngle'], detector['Grid/MinClusterSize']) == ('30', '6')
+    assert (detector['Grid/MaxObstacleHeight'], detector['Grid/RangeMax']) == ('0.7', '3')
+    assert all(isinstance(value, str) for key, value in detector.items() if key.startswith('Grid/'))  # RTAB-Map's own
+
+
+def test_a_tilt_does_not_turn_the_whole_floor_into_an_obstacle():
+    """RTAB-Map's segmentation takes the ground only if it begins below Grid/MaxGroundHeight. That was 0.1 m: with the
+    rover 5 degrees nose down the nearest ground the camera sees is above it, and every flat surface in view, the
+    floor, went into the map (and would go into the costmaps) as an obstacle."""
+    for parameters in (stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db'), stack_config.obstacle_parameters(SETTINGS)):
+        assert float(parameters['Grid/MaxGroundHeight']) >= 0.3
+        assert float(parameters['Grid/MinGroundHeight']) <= -1.0  # and a tilt the other way does not hide the ground
+    # The map and the costmaps tell ground from obstacles in the same way.
+    shared = stack_config.segmentation_parameters(SETTINGS)
+    assert shared.items() <= stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db').items()
+    assert shared.items() <= stack_config.obstacle_parameters(SETTINGS).items()
+
+
+def test_obstacles_are_kept_and_cleared_in_3d():
+    """With the 2D obstacle layer a 0.3 m stake vanished from both costmaps once the camera, 0.25 m from it, looked
+    over it: the rays to the ground behind it cleared its cells. A voxel layer clears only what a ray really crosses."""
+    params = build(rover_height_m=0.7, zed_z_m=0.9)
+    for name in ('local_costmap', 'global_costmap'):
+        layer = params[name][name]['ros__parameters']['obstacle_layer']
+        assert layer['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+        top = layer['origin_z'] + layer['z_voxels'] * layer['z_resolution']
+        assert top >= 0.9 + 0.1 - 1e-9  # above the camera: Nav2 does not clear from a camera outside the voxels
+        assert layer['z_voxels'] <= 16 and layer['max_obstacle_height'] == 0.7
+    low = build(rover_height_m=0.8, zed_z_m=0.6)['local_costmap']['local_costmap']['ros__parameters']['obstacle_layer']
+    assert low['z_voxels'] == 8
 
 
 def test_obstacles_that_have_gone_are_cleared_in_open_ground():
     """Clearing only along rays to obstacle points left anything that had gone in open ground (nothing behind it)
-    in the costmap for good. A second source clears along rays to every point, the ground included, and never marks."""
-    params = build(rover_height_m=0.7, zed_cloud_topic='/cloud', obstacle_range_m=2.5)
+    in the costmap for good. A second source clears along rays to the ground points, and never marks."""
+    params = build(rover_height_m=0.7, obstacle_range_m=2.5)
     for name in ('local_costmap', 'global_costmap'):
         layer = params[name][name]['ros__parameters']['obstacle_layer']
-        assert layer['observation_sources'].split() == ['zed', 'zed_ground']
-        ground = layer['zed_ground']
-        assert ground['topic'] == '/cloud' and ground['marking'] is False and ground['clearing'] is True
+        assert layer['observation_sources'].split() == ['obstacles', 'ground']
+        ground = layer['ground']
+        assert ground['topic'] == stack_config.GROUND_TOPIC and ground['marking'] is False and ground['clearing'] is True
         assert ground['min_obstacle_height'] < 0.0 and ground['max_obstacle_height'] == 0.7
         assert ground['raytrace_max_range'] == 3.0
+
+
+def test_nav2_waits_when_the_camera_stops_sending():
+    """A costmap source without expected_update_rate counts as current for ever: Nav2 would plan and drive on the
+    obstacles it last saw."""
+    for name in ('local_costmap', 'global_costmap'):
+        layer = TEMPLATE[name][name]['ros__parameters']['obstacle_layer']
+        for source in layer['observation_sources'].split():
+            assert 0.5 <= layer[source]['expected_update_rate'] <= 3.0, (name, source)
 
 
 def test_the_whole_outline_is_checked_against_obstacles():
@@ -91,6 +147,15 @@ def test_settings_are_checked(tmp_path):
         stack_config.load_settings(write(rover_length_m=0.0))
     with pytest.raises(ValueError, match='min_obstacle_height_m'):
         stack_config.load_settings(write(min_obstacle_height_m=2.0))
+    with pytest.raises(ValueError, match='max_ground_slope_deg'):
+        stack_config.load_settings(write(max_ground_slope_deg=0.5))  # radians typed for degrees
+    with pytest.raises(ValueError, match='obstacle_min_points'):
+        stack_config.load_settings(write(obstacle_min_points=0))
+    with pytest.raises(ValueError, match='at most 1.6 m'):
+        stack_config.load_settings(write(rover_height_m=2.0, zed_z_m=1.8))
+    # A settings file from before these two existed (a copy kept on the rover) still loads, with the defaults.
+    older = stack_config.load_settings(write(max_ground_slope_deg=None, obstacle_min_points=None))
+    assert (older['max_ground_slope_deg'], older['obstacle_min_points']) == (45.0, 10)
 
 
 def test_a_fresh_map_keeps_the_previous_one(tmp_path):

@@ -21,12 +21,23 @@ SETTINGS = (
     'zed_odom_topic', 'zed_cloud_topic', 'zed_rgb_topic', 'zed_rgb_info_topic', 'zed_depth_topic', 'map_database',
 )
 NUMBERS = {name for name in SETTINGS if name.endswith(('_m', '_rad', '_speed', '_rate'))}
+OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before they existed still loads
+    'max_ground_slope_deg': 45.0,
+    'obstacle_min_points': 10,
+}
+OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles_detection's clouds, for the costmaps
+# The ground must begin below this height for RTAB-Map's segmentation to take it as the ground. Too low, and a tilt of
+# the rover (or a camera pitch setting that is off) lifts the nearest ground over it: the whole floor then counts as
+# an obstacle. At 0.1 m that took a 5 degree tilt.
+GROUND_START_MAX_M = 0.3
+GROUND_LOWEST_M = -1.0  # points further below the rover than this are not looked at
+VOXEL_HEIGHT_M, MAX_VOXELS = 0.1, 16  # the costmaps' voxel layer (Nav2 allows 16 voxels in a column)
 
 
 def load_settings(path: str | Path) -> dict[str, Any]:
     """The /** section of autonomy.yaml, checked."""
     document = yaml.safe_load(Path(path).read_text())
-    settings = dict(document['/**']['ros__parameters'])
+    settings = {**OPTIONAL, **document['/**']['ros__parameters']}
     missing = [name for name in SETTINGS if name not in settings]
     if missing:
         raise ValueError(f'{path}: missing {", ".join(missing)}')
@@ -40,6 +51,15 @@ def load_settings(path: str | Path) -> dict[str, Any]:
             raise ValueError(f'{path}: {name} must be positive, got {settings[name]}')
     if not 0 <= settings['min_obstacle_height_m'] < settings['rover_height_m']:
         raise ValueError(f'{path}: min_obstacle_height_m must be between 0 and rover_height_m')
+    slope = settings['max_ground_slope_deg']
+    if isinstance(slope, bool) or not isinstance(slope, (int, float)) or not 5 <= slope <= 85:
+        raise ValueError(f'{path}: max_ground_slope_deg must be between 5 and 85, got {slope!r}')
+    points = settings['obstacle_min_points']
+    if isinstance(points, bool) or not isinstance(points, int) or points < 1:
+        raise ValueError(f'{path}: obstacle_min_points must be a whole number, 1 or more, got {points!r}')
+    if max(settings['rover_height_m'], settings['zed_z_m']) > VOXEL_HEIGHT_M * MAX_VOXELS:
+        raise ValueError(f'{path}: rover_height_m and zed_z_m must be at most {VOXEL_HEIGHT_M * MAX_VOXELS:g} m (the '
+                         "costmaps' obstacle layer reaches that high)")
     return settings
 
 
@@ -83,17 +103,55 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
         costmap_params['footprint'] = outline
         costmap_params['inflation_layer']['inflation_radius'] = settings['inflation_radius_m']
         layer = costmap_params['obstacle_layer']
-        source = layer['zed']
-        source['topic'] = settings['zed_cloud_topic']
+        height = settings['rover_height_m']
+        # The voxels reach the rover's height, and above the camera: Nav2 cannot clear from a camera outside them.
+        top = max(height, settings['zed_z_m'] + VOXEL_HEIGHT_M)
+        layer['z_resolution'] = VOXEL_HEIGHT_M
+        layer['z_voxels'] = min(MAX_VOXELS, math.ceil(top / VOXEL_HEIGHT_M - 1e-9))
+        layer['max_obstacle_height'] = height
+        source = layer['obstacles']
+        source['topic'] = OBSTACLES_TOPIC
         source['min_obstacle_height'] = settings['min_obstacle_height_m']
-        source['max_obstacle_height'] = settings['rover_height_m']
+        source['max_obstacle_height'] = height
         source['obstacle_max_range'] = settings['obstacle_range_m']
         source['raytrace_max_range'] = settings['obstacle_range_m'] + 0.5
-        ground = layer['zed_ground']  # clearing only, through the ground points as well
-        ground['topic'] = settings['zed_cloud_topic']
-        ground['max_obstacle_height'] = settings['rover_height_m']
+        ground = layer['ground']  # clearing only, down to the ground
+        ground['topic'] = GROUND_TOPIC
+        ground['max_obstacle_height'] = height
         ground['raytrace_max_range'] = settings['obstacle_range_m'] + 0.5
     return params
+
+
+def segmentation_parameters(settings: dict[str, Any]) -> dict[str, str]:
+    """How RTAB-Map's code tells ground from obstacles in the camera's points, for the map (rtabmap) and for the
+    costmaps (obstacles_detection) alike: a surface facing up within max_ground_slope_deg is ground, the rest is an
+    obstacle if at least obstacle_min_points points of it hang together. Heights are from base_footprint."""
+    return {
+        'Grid/NormalsSegmentation': 'true',
+        'Grid/MaxGroundAngle': f'{settings["max_ground_slope_deg"]:g}',
+        'Grid/MinClusterSize': str(settings['obstacle_min_points']),
+        'Grid/MinGroundHeight': f'{GROUND_LOWEST_M:g}',
+        'Grid/MaxGroundHeight': f'{GROUND_START_MAX_M:g}',
+        'Grid/MaxObstacleHeight': f'{settings["rover_height_m"]:g}',
+        # The rover's own parts in the camera's view (a wheel, the nose, when it is tilted down) are not obstacles.
+        'Grid/FootprintLength': f'{settings["rover_length_m"]:g}',
+        'Grid/FootprintWidth': f'{settings["rover_width_m"]:g}',
+        'Grid/FootprintHeight': f'{settings["rover_height_m"]:g}',
+    }
+
+
+def obstacle_parameters(settings: dict[str, Any]) -> dict[str, Any]:
+    """rtabmap_util's obstacles_detection: the ZED's point cloud split into ground and obstacles for the costmaps. It
+    publishes both clouds for every cloud it gets (empty ones too), which is what drive_mux and the costmaps'
+    expected_update_rate watch."""
+    return {
+        'frame_id': 'base_footprint',
+        'wait_for_transform': 0.2,
+        'qos': 2,  # best effort, in and out: takes the ZED's cloud whatever its QoS, as the costmaps' subscriptions do
+        'Grid/RangeMax': f'{settings["obstacle_range_m"] + 0.5:g}',
+        'Grid/CellSize': '0.05',
+        **segmentation_parameters(settings),
+    }
 
 
 def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any]:
@@ -120,9 +178,7 @@ def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any
         'RGBD/NeighborLinkRefining': 'true',
         'Grid/Sensor': '1',  # the grid from the depth image (Grid/FromDepth before 0.21; the old name only warns)
         'Grid/RangeMax': f'{settings["obstacle_range_m"] + 2.0:g}',
-        'Grid/MinGroundHeight': '-0.5',
-        'Grid/MaxGroundHeight': f'{settings["min_obstacle_height_m"]:g}',
-        'Grid/MaxObstacleHeight': f'{settings["rover_height_m"]:g}',
+        **segmentation_parameters(settings),
         'Grid/RayTracing': 'true',
         # The map is at least this wide (unknown space around what has been seen), so Nav2 can plan to a goal the
         # rover has not mapped yet; its global costmap is the size of this map.

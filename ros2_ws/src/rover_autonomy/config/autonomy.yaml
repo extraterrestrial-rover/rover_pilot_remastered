@@ -12,8 +12,12 @@
     rover_width_m: 1.0           # outer width, over the wheels
     rover_height_m: 0.8          # highest point (the camera mast); taller obstacles are ignored above this
     inflation_radius_m: 0.7      # Nav2 keeps the rover's centre this far from obstacles where it can
-    min_obstacle_height_m: 0.1   # depth points lower than this are ground, not obstacles (rough terrain: raise it)
+    min_obstacle_height_m: 0.1   # obstacles lower than this are driven over (rough terrain: raise it)
     obstacle_range_m: 3.0        # the ZED's depth is used up to this distance for the costmaps
+    # Ground or obstacle? Decided by the direction a surface faces, not by its height, so a tilted rover or a slope
+    # ahead does not become a wall of obstacles.
+    max_ground_slope_deg: 45.0   # a surface steeper than this is an obstacle (lower it to keep off steep slopes)
+    obstacle_min_points: 10      # an obstacle needs this many points 5 cm apart; fewer is noise (thin stakes: lower it)
 
     # The ZED 2i's mount: zed_camera_link (the middle of the camera's underside, at the tripod screw) relative to
     # base_footprint. MEASURE: these are placeholders.
@@ -52,6 +56,7 @@ drive_mux:
     no_motion_timeout_s: 3.0     # a motion command for this long without the odometry moving (0.0 = not checked)
     no_motion_distance_m: 0.03   # what counts as moving: this far ...
     no_motion_angle_rad: 0.03    # ... or this much turned
+    obstacle_timeout_s: 1.0      # no obstacle cloud from the camera for this long (0.0 = not checked)
     # ... and when Nav2 itself cannot: each of its two costmaps reports the time of the transform it places the
     # rover with (their footprint topics). A costmap whose transforms have stopped steers from an old position.
     nav_pose_max_age_s: 1.0      # a costmap working with a transform older than this (0.0 = not checked)

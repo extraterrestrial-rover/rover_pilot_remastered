@@ -48,6 +48,13 @@ def test_the_zed_does_not_flood_the_computer_with_images():
     assert 1.0 <= general['pub_frame_rate'] <= 15.0
 
 
+def test_the_costmaps_get_their_clouds_from_the_obstacle_detector():
+    assert "package='rtabmap_util', executable='obstacles_detection'" in SOURCE
+    assert "('cloud', settings['zed_cloud_topic']), ('obstacles', stack_config.OBSTACLES_TOPIC)" in SOURCE
+    assert "('ground', stack_config.GROUND_TOPIC)" in SOURCE
+    assert 'rtabmap_util' in (PACKAGE / 'package.xml').read_text()
+
+
 def test_drive_node_listens_to_the_mux():
     assert "SetRemap(src='/cmd_vel', dst='/cmd_vel_drive')" in SOURCE
     # ... for its e-stop too: the mux passes the base station's on, and holds it released only while a goal is

@@ -109,6 +109,17 @@ def launch_setup(context):
     actions.append(Node(package='robot_localization', executable='ekf_node', name='ekf_local', output='screen',
                         parameters=[str(share / 'config' / 'ekf.yaml')]))
 
+    # The costmaps' eyes: the ZED's cloud split into ground and obstacles (config/nav2_params.yaml says why).
+    try:
+        get_package_share_directory('rtabmap_util')
+    except PackageNotFoundError as error:
+        raise RuntimeError("rtabmap_util is not installed (sudo apt install ros-humble-rtabmap-ros): it tells ground "
+                           "from obstacles in the camera's point cloud for Nav2's costmaps") from error
+    actions.append(Node(package='rtabmap_util', executable='obstacles_detection', name='obstacles_detection', output='screen',
+                        respawn=True, respawn_delay=1.0, parameters=[stack_config.obstacle_parameters(settings)],
+                        remappings=[('cloud', settings['zed_cloud_topic']), ('obstacles', stack_config.OBSTACLES_TOPIC),
+                                    ('ground', stack_config.GROUND_TOPIC)]))
+
     if flag(context, 'slam'):
         database, kept = stack_config.prepare_map(settings['map_database'], flag(context, 'continue_map'))
         actions.append(LogInfo(msg=f'map: continuing {database}' if flag(context, 'continue_map') else

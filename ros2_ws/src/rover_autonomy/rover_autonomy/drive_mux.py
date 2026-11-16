@@ -6,9 +6,10 @@ this node publishes: the base station's e-stop, passed on the moment it arrives.
 silent does this node decide: released while AUTO goes on to a running goal, latched otherwise. If this node stops,
 drive_node gets neither commands nor an e-stop heartbeat and stops the rover.
 
-In AUTO it also watches the camera's odometry (zed_odometry's output), whether Nav2's two costmaps still know where
-the rover is (their footprints carry the time of the transform they used), and the ESP32's state (drive_node's
-/diagnostics), and reports on /rover/auto_fault when it stopped AUTO by itself, so that goal_manager cancels the goal.
+In AUTO it also watches the camera's odometry (zed_odometry's output), that obstacle clouds keep coming, whether
+Nav2's two costmaps still know where the rover is (their footprints carry the time of the transform they used), and
+the ESP32's state (drive_node's /diagnostics). It reports on /rover/auto_fault when it stopped AUTO by itself, so
+that goal_manager cancels the goal.
 """
 from __future__ import annotations
 
@@ -21,11 +22,13 @@ from geometry_msgs.msg import PolygonStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool, String
 
 from rover_autonomy.frames import yaw_of
 from rover_autonomy.mux_logic import NAV_COSTMAPS, DriveMux, MuxConfig, checked_deadband
+from rover_autonomy.stack_config import OBSTACLES_TOPIC
 from rover_pilot_remastered.kinematics import DriveGeometry
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -63,6 +66,7 @@ class DriveMuxNode(Node):
             rearm_interval_s=param('rearm_interval_s', defaults.rearm_interval_s).value,
             goal_timeout_s=param('goal_timeout_s', defaults.goal_timeout_s).value,
             linkless_limit_s=param('linkless_limit_s', defaults.linkless_limit_s).value,
+            obstacle_timeout_s=param('obstacle_timeout_s', defaults.obstacle_timeout_s).value,
             nav_pose_max_age_s=param('nav_pose_max_age_s', defaults.nav_pose_max_age_s).value,
             nav_pose_timeout_s=param('nav_pose_timeout_s', defaults.nav_pose_timeout_s).value,
         )
@@ -76,6 +80,9 @@ class DriveMuxNode(Node):
         self.create_subscription(Bool, param('goal_active_topic', '/rover/goal_active').value, self.on_goal_active, LATEST_ONLY)
         self.create_subscription(Odometry, param('odometry_topic', '/zed/odom_base').value, self.on_odometry, 10)
         self.create_subscription(DiagnosticArray, '/diagnostics', self.on_diagnostics, 10)
+        # The detector's obstacle cloud is small (a few hundred points), and only its arrival matters here.
+        self.create_subscription(PointCloud2, param('obstacles_topic', OBSTACLES_TOPIC).value,
+                                 lambda _: self.mux.on_obstacles(time.monotonic()), qos_profile_sensor_data)
         for costmap in NAV_COSTMAPS:
             topic = param(f'{costmap}_footprint_topic', f'/{costmap}_costmap/published_footprint').value
             self.create_subscription(PolygonStamped, topic, lambda msg, costmap=costmap: self.on_footprint(costmap, msg), 10)
