@@ -54,6 +54,14 @@ drive_mux:
     min_wheel_rpm_straight: 0.0  # the target where the rover just starts to roll straight ahead (expect about 15 to 25)
     min_wheel_rpm_spin: 0.0      # the target where it just starts to turn in place (skid steer needs much more)
     stop_below_rpm: 0.5          # slower commands are noise: a stop
+    # The stall kick. The deadband was measured on one patch of ground; elsewhere the rover may not start at Nav2's
+    # slow commands (it showed as "goal cancelled: the rover has not moved"). When it stands although commanded, or
+    # crawls at under half of what was asked, the deadband is raised. The extra stays while the ground needs it and
+    # goes when the rover runs faster than commanded. Only slow commands gain: nothing is lifted beyond the deadband
+    # plus stall_kick_max_rpm.
+    stall_kick_delay_s: 1.0      # standing this long first
+    stall_kick_rpm_per_s: 12.0   # then raised this fast (0.0 = never)
+    stall_kick_max_rpm: 20.0     # by at most this much
     # AUTO stops itself, and the goal is cancelled, when it cannot know where the rover is:
     odometry_timeout_s: 0.5      # no odometry from the camera for this long
     no_motion_timeout_s: 3.0     # a motion command for this long without the odometry moving (0.0 = not checked)

@@ -249,6 +249,88 @@ def test_auto_does_not_drive_while_a_nav2_costmap_is_silent():
     assert off.step(1.0, nav_age={'local': 70.0, 'global': None}) == (0.4, 0.0)  # 0 turns the check off
 
 
+KICKED = MuxConfig(neutral_hold_s=0.0, min_wheel_rpm_straight=20.0, min_wheel_rpm_spin=30.0)
+
+
+def test_a_rover_that_does_not_start_gets_a_kick():
+    # The deadband is measured on one patch of ground. In the lab, on ground that needed 25 % more, Nav2's slow turn
+    # never broke the wheels free: "goal cancelled: the rover has not moved for 3 s", every time a goal began with a turn.
+    run = Run(KICKED)
+    turn = (0.0, 0.2)
+    plain = fastest(*deadband_corrected(*turn, ROVER, KICKED))
+    assert fastest(*run.step(0.9, command=turn, odometry='frozen')) == pytest.approx(plain)  # the motors need a moment
+    assert run.mux.state == 'AUTO: following Nav2'
+    kicked = fastest(*run.step(1.1, command=turn, odometry='frozen'))  # stood for 2 s: 1 s of kick, 12 rpm a second
+    assert plain + 9.0 < kicked < plain + 12.5 and 'raising the output' in run.mux.state
+    assert fastest(*run.step(0.5, command=turn)) == pytest.approx(plain)  # it moves: the kick is taken back at once
+    assert run.mux.kick == 0.0 and run.mux.state == 'AUTO: following Nav2' and run.mux.fault == ''
+
+
+def test_the_kick_stays_while_the_ground_keeps_needing_it():
+    # The first version took the kick back the moment the rover moved. On ground where a turn needs 45 rpm all the
+    # time, not only to break loose (the settings say 30, and Nav2's 0.5 rad/s comes out at 40), the rover then
+    # turned in twitches, 0.013 rad/s in all: in the rehearsal it never got round to its goal.
+    run = Run(KICKED)
+    half_track, yaw, turned_at = 0.42, 0.0, {}
+    for tick in range(400):  # 8 s; Nav2 asks for a turn at 0.5 rad/s
+        run.now += 0.02
+        run.mux.on_mode(True, run.now)
+        run.mux.on_estop(False, run.now)
+        run.mux.on_goal_active(True, run.now)
+        run.mux.on_obstacles(run.now)
+        for costmap in ('local', 'global'):
+            run.mux.on_nav_pose(costmap, 0.05, run.now)
+        run.mux.on_auto_command(0.0, 0.5, run.now)
+        run.mux.on_odometry(0.0, 0.0, math.remainder(yaw, 2 * math.pi), run.now)
+        out = run.mux.output(run.now)
+        wheel_rpm = motor(fastest(*out), 45.0)  # what the ground lets through
+        yaw += wheel_rpm * math.pi * 0.28 / 60.0 / half_track * 0.02
+        turned_at[tick] = yaw
+    assert run.mux.fault == ''
+    rate = (turned_at[399] - turned_at[199]) / 4.0  # over the last 4 s
+    assert 0.4 * 0.5 < rate < 1.3 * 0.5, rate  # it turns, steadily, at half or more of what was asked
+    steps = [turned_at[t + 25] - turned_at[t] for t in range(200, 375, 25)]  # every half second of those
+    assert min(steps) > 0.02, steps  # and never stands again
+
+
+def test_the_kick_ends_in_the_fault_when_the_rover_really_is_stuck():
+    run = Run(KICKED)
+    out = run.step(2.9, command=(0.0, 0.2), odometry='frozen')
+    assert fastest(*out) == pytest.approx(30.0 + 20.0, abs=4.0) and run.mux.fault == ''  # the deadband plus all of the kick
+    assert run.step(0.2, command=(0.0, 0.2), odometry='frozen') == (0.0, 0.0)  # 3 s as before: the kick adds no time
+    assert 'has not moved for 3 s' in run.mux.fault and run.mux.kick == 0.0
+    off = Run(MuxConfig(neutral_hold_s=0.0, min_wheel_rpm_straight=20.0, min_wheel_rpm_spin=30.0, stall_kick_rpm_per_s=0.0))
+    plain = deadband_corrected(0.0, 0.2, ROVER, KICKED)
+    assert off.step(2.9, command=(0.0, 0.2), odometry='frozen') == pytest.approx(plain)  # 0 turns the kick off
+    assert off.step(0.2, command=(0.0, 0.2), odometry='frozen') == (0.0, 0.0) and 'has not moved' in off.mux.fault
+
+
+def test_the_kick_only_helps_slow_commands():
+    # Frozen odometry looks just like a rover that does not start, but then the rover is driving, blind. A command
+    # that is already well above the deadband must not be made faster for it.
+    run = Run(KICKED)
+    cruise = deadband_corrected(0.4, 0.0, ROVER, KICKED)
+    assert run.step(2.9, command=(0.4, 0.0), odometry='frozen') == pytest.approx(cruise)
+    for kick in (5.0, 20.0, 500.0):  # and no side is ever lifted beyond the deadband plus stall_kick_max_rpm
+        for linear, angular in ((0.02, 0.0), (0.2, 0.0), (0.0, 0.1), (0.0, 0.8), (0.3, 0.3)):
+            plain = sides(*deadband_corrected(linear, angular, ROVER, KICKED))
+            lifted = sides(*deadband_corrected(linear, angular, ROVER, KICKED, kick))
+            limit = deadband_for_kick(linear, angular) + KICKED.stall_kick_max_rpm
+            for before, after in zip(plain, lifted):
+                assert abs(after) >= abs(before) - 1e-9 and abs(after) <= max(abs(before), limit) + 1e-9
+
+
+def deadband_for_kick(linear, angular):
+    turning = abs(angular) * 0.42  # half the track width
+    return 20.0 + 10.0 * turning / (abs(linear) + turning)
+
+
+def test_without_a_measured_deadband_the_kick_finds_the_motors_start():
+    run = Run(MuxConfig(neutral_hold_s=0.0))  # the deadband settings still 0.0
+    assert run.step(0.9, command=(0.05, 0.0), odometry='frozen') == (0.05, 0.0)
+    assert fastest(*run.step(1.6, command=(0.05, 0.0), odometry='frozen')) > 15.0  # 0.05 m/s alone is 3.4 rpm
+
+
 def test_turning_on_the_spot_counts_as_motion():
     run = Run(MuxConfig(neutral_hold_s=0.0))
     for step in range(300):  # 6 s of turning: only the heading changes

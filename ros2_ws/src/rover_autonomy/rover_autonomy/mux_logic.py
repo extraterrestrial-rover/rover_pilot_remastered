@@ -13,7 +13,9 @@ e-stop stops the rover whatever else is going on. Its AUTO heartbeat (/rover/aut
 AUTO stops itself (zeros, and a fault that goal_manager cancels the goal on) when it cannot know where the rover is:
   - no odometry from the camera for odometry_timeout_s (unplugged, its node gone, tracking lost);
   - a motion command for no_motion_timeout_s without the odometry moving (odometry frozen, wheels stuck, or the
-    deadband set too low for the motors to turn);
+    deadband set too low for the motors to turn). Before that it tries: a rover that stands although commanded gets
+    its deadband raised step by step (the stall kick), since ground differs from where the deadband was measured.
+    The extra is kept while the rover needs it and taken back when it moves faster than commanded;
   - no obstacle data from the camera for obstacle_timeout_s (its point cloud, or the detector that splits it into
     ground and obstacles, has stopped): Nav2 would go on with the obstacles it last saw;
   - Nav2 itself no longer knows: one of its costmaps places the rover with a transform older than
@@ -57,6 +59,11 @@ class MuxConfig:
     min_wheel_rpm_straight: float = 0.0  # where the rover just starts to roll straight ahead (0 = no correction)
     min_wheel_rpm_spin: float = 0.0  # where it just starts to turn in place (skid steer needs much more)
     stop_below_rpm: float = 0.5   # commands slower than this are noise: a stop
+    # The stall kick: commanded but standing (this ground needs more than the measured deadband), the deadband is
+    # raised until the rover moves, kept while it moves no faster than commanded, and taken back when it does.
+    stall_kick_delay_s: float = 1.0  # standing this long first (the motors and the odometry take part of it)
+    stall_kick_rpm_per_s: float = 12.0  # then raised this fast (0 = never)
+    stall_kick_max_rpm: float = 20.0  # by at most this much; no command is lifted beyond the deadband plus this
 
 
 MAX_DEADBAND_SHARE = 0.8  # a deadband above this share of max_wheel_rpm is a unit mistake, not a measurement
@@ -76,7 +83,8 @@ def checked_deadband(straight_rpm: float, spin_rpm: float, max_wheel_rpm: float)
     return float(straight_rpm), float(spin_rpm), ''
 
 
-def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometry, config: MuxConfig) -> tuple[float, float]:
+def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometry, config: MuxConfig,
+                       kick_rpm: float = 0.0) -> tuple[float, float]:
     """Nav2's command with each side's wheel target lifted over the motors' deadband.
 
     An open-loop wheel turns only above some target d, and from there about linearly up to full speed. So each side's
@@ -85,6 +93,10 @@ def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometr
     scrubs the tyres and needs more than rolling straight, so it is blended between the two measured values by how
     much of the command is turning. The result is given back as a twist, which drive_node turns into exactly these
     wheel targets.
+
+    kick_rpm raises d for a rover that does not start (DriveMux decides when). Only slow commands gain from it: no
+    side is lifted beyond d + stall_kick_max_rpm, so a command that is already well above the deadband goes out as
+    without the kick.
     """
     left, right, _, _ = twist_to_wheel_rpm(linear_x, angular_z, geometry)
     threshold = max(config.stop_below_rpm, 0.0)
@@ -95,20 +107,37 @@ def deadband_corrected(linear_x: float, angular_z: float, geometry: DriveGeometr
     spin_share = turning / (abs(linear_x) + turning)  # 0 straight ahead, 1 on the spot; the sum is above zero here
     deadband = config.min_wheel_rpm_straight + (config.min_wheel_rpm_spin - config.min_wheel_rpm_straight) * spin_share
     top = geometry.max_wheel_rpm
-    if not 0.0 < deadband < top:
+    measured = 0.0 < deadband < top
+    kick = max(kick_rpm, 0.0)
+    if not measured and kick == 0.0:
         return linear_x, angular_z  # no correction (0), or unusable settings: pass Nav2's command as it is
+    base = deadband if measured else 0.0
+    ceiling = min(base + max(config.stall_kick_max_rpm, 0.0), MAX_DEADBAND_SHARE * top)
+    raised = min(base + kick, ceiling)
 
     def lifted(target: float) -> float:
         if abs(target) <= threshold:
             return 0.0
-        return math.copysign(deadband + (top - deadband) * abs(target) / top, target)
+        plain = base + (top - base) * abs(target) / top if measured else abs(target)
+        kicked = raised + (top - raised) * abs(target) / top
+        return math.copysign(max(plain, min(kicked, ceiling)), target)
 
-    left, right = lifted(left), lifted(right)
+    sides = lifted(left), lifted(right)
+    if not measured and sides == (left, right):
+        return linear_x, angular_z  # nothing to lift: Nav2's command as it is, to the last digit
+    left, right = sides
     metres_per_rpm = math.pi * geometry.wheel_diameter_m / 60.0
     return (left + right) / 2.0 * metres_per_rpm, (right - left) / (2.0 * half_track) * metres_per_rpm
 
 
 ESP32_DRIVING = 'DRIVING'  # the ESP32 state, as drive_node reports it, in which it follows commands
+RATE_WINDOW_S = 0.15  # the odometry's speed is taken over at least this long
+# The stall kick compares how fast the rover moves with how fast it was asked to, both as the speed of the faster
+# side's wheels (m/s): driving plus turning times half the track.
+STANDING_SPEED = 0.03  # slower than this is standing still, whatever was asked (the odometry's own jitter is below it)
+STANDING_SHARE = 0.5  # ... and so is less than this share of what was asked: the kick grows
+OUTRUN_SHARE = 1.3  # more than this share of what was asked: the kick is not needed (any more) and is taken back
+KICK_DECAY_RPM_PER_S = 60.0  # ... this fast
 NAV_COSTMAPS = ('local', 'global')  # Nav2's costmaps: the controller's and the planner's, one process each
 DRIVE_STATE_MAX_AGE_S = 3.0  # drive_node reports once a second; an older report says nothing about now
 
@@ -132,6 +161,11 @@ class DriveMux:
         self._drive_state: str | None = None
         self._drive_state_time = 0.0
         self._nav_pose: dict[str, tuple[float, float]] = {}  # per costmap: (the age of its pose of the rover, when heard)
+        self._rate_ref: tuple[float, float, float, float] | None = None  # an odometry pose and its time, for the speed
+        self._speed = self._turn_rate = 0.0  # the rover's speed and turn rate by the odometry
+        self._standing_since: float | None = None  # since when it has stood although commanded
+        self._last_tick: float | None = None
+        self.kick = 0.0  # rpm added to the deadband right now
         self._obstacle_time: float | None = None
         self._estop: bool | None = None  # the base station's e-stop, as last heard
         self._estop_time: float | None = None
@@ -166,6 +200,13 @@ class DriveMux:
 
     def on_odometry(self, x: float, y: float, yaw: float, now: float) -> None:
         self._odom, self._odom_time = (x, y, yaw), now
+        if self._rate_ref is None:
+            self._rate_ref = (x, y, yaw, now)
+        elif now - self._rate_ref[3] >= RATE_WINDOW_S:
+            rx, ry, ryaw, rtime = self._rate_ref
+            self._speed = math.hypot(x - rx, y - ry) / (now - rtime)
+            self._turn_rate = abs(math.atan2(math.sin(yaw - ryaw), math.cos(yaw - ryaw))) / (now - rtime)
+            self._rate_ref = (x, y, yaw, now)
         if self._motion_since is None:
             return
         if self._motion_ref is None or self._moved(self._motion_ref, self._odom):
@@ -244,7 +285,36 @@ class DriveMux:
 
     def _leave_auto(self) -> None:
         self._auto_since = self._motion_since = None
+        self._end_kick()
         self.fault = ''
+
+    def _end_kick(self) -> None:
+        self._standing_since = self._last_tick = None
+        self.kick = 0.0
+
+    def _kick(self, linear_x: float, angular_z: float, now: float) -> float:
+        """The stall kick for this tick, in rpm on top of the deadband. It grows while the rover stands, or crawls at
+        a fraction of what it is commanded; it stays while the rover moves about as commanded (ground that needs
+        more all the time, as when turning on the spot, keeps it); it goes back quickly when the rover outruns the
+        command (it only had to break loose)."""
+        dt = 0.0 if self._last_tick is None else min(max(now - self._last_tick, 0.0), 0.1)
+        self._last_tick = now
+        told_to_stand = deadband_corrected(linear_x, angular_z, self.geometry, self.config) == (0.0, 0.0)
+        if self.config.stall_kick_rpm_per_s <= 0 or told_to_stand:
+            self._standing_since, self.kick = None, 0.0
+            return 0.0
+        half_track = self.geometry.track_width_m * self.geometry.turn_track_factor / 2.0
+        asked = abs(linear_x) + abs(angular_z) * half_track
+        made = self._speed + self._turn_rate * half_track
+        if made >= max(STANDING_SHARE * asked, STANDING_SPEED):
+            self._standing_since = None
+            if made > OUTRUN_SHARE * asked:
+                self.kick = max(self.kick - KICK_DECAY_RPM_PER_S * dt, 0.0)
+        elif self._standing_since is None:
+            self._standing_since = now
+        elif now - self._standing_since >= self.config.stall_kick_delay_s:
+            self.kick = min(self.kick + self.config.stall_kick_rpm_per_s * dt, max(self.config.stall_kick_max_rpm, 0.0))
+        return self.kick
 
     def _drive_auto(self, now: float, label: str) -> tuple[float, float]:
         commanded = self._auto_cmd is not None and now - self._auto_cmd_time <= self.config.command_timeout_s
@@ -255,6 +325,7 @@ class DriveMux:
             self.fault = ''  # the goal that ran into it is gone (goal_manager cancelled it): ready for the next one
         if self.fault:
             self._auto_since = self._motion_since = None
+            self._end_kick()
             self.state = f'{label} stopped: {self.fault}'
             return 0.0, 0.0
         if self._auto_since is None or self._needs_rearm(now):
@@ -271,12 +342,14 @@ class DriveMux:
             self._motion_since = None
             self.state = f'{label}: no Nav2 command: holding still'
             return 0.0, 0.0
-        self.state = f'{label}: following Nav2'
         linear_x, angular_z = self._auto_cmd
         if not (math.isfinite(linear_x) and math.isfinite(angular_z)):
             self._motion_since = None
+            self.state = f'{label}: following Nav2'
             return 0.0, 0.0
-        command = deadband_corrected(linear_x, angular_z, self.geometry, self.config)
+        kick = self._kick(linear_x, angular_z, now)
+        self.state = f'{label}: following Nav2' + (' (the rover does not start: raising the output)' if kick > 0 else '')
+        command = deadband_corrected(linear_x, angular_z, self.geometry, self.config, kick)
         if command == (0.0, 0.0):
             self._motion_since = None
         elif self._motion_since is None:
@@ -299,7 +372,10 @@ class DriveMux:
                     return (f"Nav2's {costmap} costmap has lost track of the rover: the transforms it works with have "
                             "stopped. Restart the rover's launch")
         timeout = self.config.no_motion_timeout_s
-        if timeout > 0 and self._motion_since is not None and now - self._motion_since > timeout:
+        # While the kick is still growing for a standing rover, it is too early to give up.
+        kicking = (self.config.stall_kick_rpm_per_s > 0 and self._standing_since is not None
+                   and self.kick < self.config.stall_kick_max_rpm)
+        if timeout > 0 and self._motion_since is not None and now - self._motion_since > timeout and not kicking:
             return (f'the rover has not moved for {timeout:g} s although commanded (odometry frozen, wheels stuck, or '
                     'the deadband setting too low)')
         return ''
