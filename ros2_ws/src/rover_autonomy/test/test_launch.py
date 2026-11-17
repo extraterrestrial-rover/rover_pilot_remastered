@@ -83,3 +83,11 @@ def test_the_launch_checks_the_installed_tf2():
     in the field."""
     assert "system_checks.tf2_problem(installed_version('tf2'), installed_version('tf2_ros'))" in SOURCE
     assert "LogInfo(msg=f'WARNING: {tf2_problem}')" in SOURCE
+
+
+def test_the_gps_mode_starts_the_gps_and_the_global_ekf():
+    assert "DeclareLaunchArgument('localization', default_value='slam'" in SOURCE  # the RTAB-Map mode stays the default
+    for node in ("executable='gps_node'", "executable='gps_alignment'", "name='ekf_global'"):
+        assert node in SOURCE
+    assert "remappings=[('odometry/filtered', '/odometry/global')]" in SOURCE  # not on top of ekf_local's output
+    assert "remappings += [('map', '/rtabmap/map'), ('gps/fix', '/gps/fix')]" in SOURCE

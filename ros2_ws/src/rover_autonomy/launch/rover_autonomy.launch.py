@@ -76,8 +76,9 @@ def launch_setup(context):
     max_speed = LaunchConfiguration('max_speed').perform(context).strip()
     speed, turn_rate = stack_config.checked_limits(settings, float(max_speed) if max_speed else None,
                                                    geometry.max_linear_speed, geometry.max_angular_speed)
+    localization = LaunchConfiguration('localization').perform(context).strip().lower()
     template = yaml.safe_load((share / 'config' / 'nav2_params.yaml').read_text())
-    nav2 = stack_config.nav2_parameters(template, settings, speed, turn_rate, str(share / 'behavior_trees'))
+    nav2 = stack_config.nav2_parameters(template, settings, speed, turn_rate, str(share / 'behavior_trees'), localization)
     handle, nav2_file = tempfile.mkstemp(prefix='rover_autonomy_nav2_', suffix='.yaml')
     os.close(handle)
     stack_config.write_yaml(nav2, nav2_file)
@@ -112,6 +113,17 @@ def launch_setup(context):
                         respawn=True, respawn_delay=1.0, parameters=[settings_file]))  # the camera's pose -> the rover's
     actions.append(Node(package='robot_localization', executable='ekf_node', name='ekf_local', output='screen',
                         parameters=[str(share / 'config' / 'ekf.yaml')]))
+    if localization == 'gps':
+        # GPS mode: the L89HA, its alignment with the map (north from the driven track), and ekf_global, which owns
+        # map -> odom (RTAB-Map then only records).
+        actions.append(LogInfo(msg='localization: GPS (ekf_global corrects the drift; drive about 15 m before GPS goals)'))
+        actions.append(Node(package='rover_autonomy', executable='gps_node', name='gps_node', output='screen',
+                            respawn=True, respawn_delay=1.0, parameters=[settings_file]))
+        actions.append(Node(package='rover_autonomy', executable='gps_alignment', name='gps_alignment', output='screen',
+                            respawn=True, respawn_delay=1.0, parameters=[settings_file]))
+        actions.append(Node(package='robot_localization', executable='ekf_node', name='ekf_global', output='screen',
+                            parameters=[str(share / 'config' / 'ekf_global.yaml')],
+                            remappings=[('odometry/filtered', '/odometry/global')]))
 
     # The costmaps' eyes: the ZED's cloud split into ground and obstacles (config/nav2_params.yaml says why).
     try:
@@ -128,11 +140,13 @@ def launch_setup(context):
         database, kept = stack_config.prepare_map(settings['map_database'], flag(context, 'continue_map'))
         actions.append(LogInfo(msg=f'map: continuing {database}' if flag(context, 'continue_map') else
                                f'map: fresh in {database}' + (f' (the previous one is now {kept})' if kept else '')))
+        remappings = [('rgb/image', settings['zed_rgb_topic']), ('rgb/camera_info', settings['zed_rgb_info_topic']),
+                      ('depth/image', settings['zed_depth_topic'])]
+        if localization == 'gps':  # recording only: its map stays off /map, and it keeps the GPS fixes with its nodes
+            remappings += [('map', '/rtabmap/map'), ('gps/fix', '/gps/fix')]
         actions.append(Node(package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
-                            parameters=[stack_config.rtabmap_parameters(settings, str(database))],
-                            remappings=[('rgb/image', settings['zed_rgb_topic']),
-                                        ('rgb/camera_info', settings['zed_rgb_info_topic']),
-                                        ('depth/image', settings['zed_depth_topic'])]))
+                            parameters=[stack_config.rtabmap_parameters(settings, str(database), localization)],
+                            remappings=remappings))
 
     for package, executable, remappings in NAV2_NODES:
         actions.append(Node(package=package, executable=executable, name=executable, output='screen',
@@ -164,6 +178,8 @@ def generate_launch_description():
         DeclareLaunchArgument('max_speed', default_value='', description="AUTO's top speed in m/s for this run (default: autonomy.yaml)"),
         DeclareLaunchArgument('zed', default_value='true', description='start the ZED wrapper (false: it runs separately)'),
         DeclareLaunchArgument('slam', default_value='true', description='start RTAB-Map (false: something else provides /map and map -> odom)'),
+        DeclareLaunchArgument('localization', default_value='slam',
+                              description='slam: RTAB-Map corrects the drift (as before); gps: the GPS does, with ekf_global (AUTONOMY.md, "GPS")'),
         DeclareLaunchArgument('settings', default_value=str(share / 'config' / 'autonomy.yaml'), description='autonomy settings file'),
         OpaqueFunction(function=launch_setup),
     ])

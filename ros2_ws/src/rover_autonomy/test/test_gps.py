@@ -106,4 +106,17 @@ def test_east_north_up_and_back():
     assert north == pytest.approx(110.83, abs=0.05) and east == pytest.approx(195.2, abs=0.2)  # 0.001 degrees each
     assert geo.from_enu(east, north, origin) == (pytest.approx(28.751, abs=1e-9), pytest.approx(77.112, abs=1e-9))
     assert geo.distance(origin, (28.751, 77.112)) == pytest.approx(math.hypot(east, north), abs=1e-6)
-    assert '28°45\'00.0"N' in geo.format_position(28.75, 77.11)
+    assert '28°45\'00.00"N 77°06\'36.00"E' in geo.format_position(28.75, 77.11)
+
+
+def test_waypoints_are_read_from_the_command_line_and_a_file(tmp_path):
+    pytest.importorskip('rclpy')
+    from rover_autonomy.gps_goals import read_positions  # noqa: PLC0415  (imports rclpy: only where ROS is)
+    file = tmp_path / 'waypoints.txt'
+    file.write_text('# the competition sheet\n28.7501, 77.1171\n\n28°45\'02.1"N 77°07\'05.3"E  # post B\n')
+    positions = read_positions(['28.75 77.11'], str(file))
+    assert positions[0] == (28.75, 77.11) and positions[1] == (28.7501, 77.1171) and len(positions) == 3
+    with pytest.raises(ValueError, match='waypoint 2: "95"'):
+        read_positions(['28.75, 77.11', '95, 77'], None)
+    with pytest.raises(ValueError, match='no positions'):
+        read_positions([], None)

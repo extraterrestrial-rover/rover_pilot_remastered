@@ -15,8 +15,8 @@ SETTINGS = stack_config.load_settings(PACKAGE / 'config' / 'autonomy.yaml')
 AUTONOMY = yaml.safe_load((PACKAGE / 'config' / 'autonomy.yaml').read_text())
 
 
-def build(speed=0.5, turn_rate=0.8, **changes):
-    return stack_config.nav2_parameters(TEMPLATE, dict(SETTINGS, **changes), speed, turn_rate, '/trees')
+def build(speed=0.5, turn_rate=0.8, localization='slam', **changes):
+    return stack_config.nav2_parameters(TEMPLATE, dict(SETTINGS, **changes), speed, turn_rate, '/trees', localization)
 
 
 def test_auto_speed_and_turn_rate_reach_every_nav2_limit():
@@ -267,3 +267,30 @@ def test_the_deadband_is_off_until_it_is_measured():
     shipped 20 and 60 rpm as placeholders: a 0.3 rad/s turn went out at 67 % PWM)."""
     mux = AUTONOMY['drive_mux']['ros__parameters']
     assert (mux['min_wheel_rpm_straight'], mux['min_wheel_rpm_spin']) == (0.0, 0.0)
+
+
+def test_in_the_gps_mode_nav2_plans_in_a_window_around_the_rover():
+    """A 500 m competition run: RTAB-Map's map would be about 100 million cells at 5 cm, too big to plan on or to
+    send over the radio. In the GPS mode the global costmap is a window around the rover, from what the camera saw."""
+    gps = build(localization='gps', gps_window_m=120.0)['global_costmap']['global_costmap']['ros__parameters']
+    assert 'static_layer' not in gps['plugins'] and 'static_layer' not in gps
+    assert gps['rolling_window'] is True and gps['width'] == gps['height'] == 120 and gps['resolution'] == 0.1
+    assert gps['global_frame'] == 'map'  # ekf_global's map frame
+    slam = build()['global_costmap']['global_costmap']['ros__parameters']
+    assert 'static_layer' in slam['plugins'] and not slam.get('rolling_window', False)
+    with pytest.raises(ValueError, match='localization:=gnss'):
+        build(localization='gnss')
+
+
+def test_only_one_node_corrects_the_drift():
+    """map -> odom has one publisher: RTAB-Map in the RTAB-Map mode, ekf_global in the GPS mode (where RTAB-Map
+    records only)."""
+    assert stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db')['publish_tf'] is True
+    assert stack_config.rtabmap_parameters(SETTINGS, '/maps/a.db', 'gps')['publish_tf'] is False
+    ekf = yaml.safe_load((PACKAGE / 'config' / 'ekf_global.yaml').read_text())['ekf_global']['ros__parameters']
+    assert ekf['world_frame'] == ekf['map_frame'] == 'map' and ekf['publish_tf'] is True
+    assert ekf['odom0'] == '/zed/odom_base'  # zed_odometry's output: the camera's odometry at the rover's centre
+    assert ekf['odom0_differential'] is True  # the camera's drift is what this filter corrects: its motion only
+    assert ekf['odom1'] == '/odometry/gps' and ekf['odom1_differential'] is False and ekf['odom1_config'][:2] == [True, True]
+    local = yaml.safe_load((PACKAGE / 'config' / 'ekf.yaml').read_text())['ekf_local']['ros__parameters']
+    assert local['world_frame'] == 'odom' and '/odometry/gps' not in local.values()  # odom never jumps

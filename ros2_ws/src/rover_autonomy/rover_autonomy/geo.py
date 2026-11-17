@@ -88,7 +88,7 @@ def format_position(latitude: float, longitude: float) -> str:
         degrees = int(value)
         minutes = int((value - degrees) * 60)
         seconds = (value - degrees - minutes / 60) * 3600
-        return f'{degrees}°{minutes:02d}\'{seconds:04.1f}"{hemisphere}'
+        return f'{degrees}°{minutes:02d}\'{seconds:05.2f}"{hemisphere}'  # 0.01" is 0.3 m
     return f'{latitude:.6f}, {longitude:.6f} ({dms(latitude, "N", "S")} {dms(longitude, "E", "W")})'
 
 

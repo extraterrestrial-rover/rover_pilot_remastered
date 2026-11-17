@@ -31,7 +31,10 @@ OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before th
     'gps_x_m': 0.0,
     'gps_y_m': 0.0,
     'gps_z_m': 0.9,
+    'gps_window_m': 100.0,
 }
+LOCALIZATIONS = ('slam', 'gps')  # who corrects the odometry's drift: RTAB-Map, or the GPS with ekf_global
+GPS_WINDOW_RESOLUTION_M = 0.1  # the GPS mode's global costmap: coarser, it covers a much larger area
 DRIVING_STYLES = ('arcs', 'pivot')  # auto_driving: Pure Pursuit (arcs), or DWB turning on the spot (before arcs)
 OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles_detection's clouds, for the costmaps
 GROUND_LOWEST_M = -1.0  # points further below the rover than this are not looked at
@@ -62,6 +65,9 @@ def load_settings(path: str | Path) -> dict[str, Any]:
     points = settings['obstacle_min_points']
     if isinstance(points, bool) or not isinstance(points, int) or points < 1:
         raise ValueError(f'{path}: obstacle_min_points must be a whole number, 1 or more, got {points!r}')
+    window = settings['gps_window_m']
+    if isinstance(window, bool) or not isinstance(window, (int, float)) or not 20 <= window <= 300:
+        raise ValueError(f'{path}: gps_window_m must be between 20 and 300, got {window!r}')
     if settings['auto_driving'] not in DRIVING_STYLES:
         raise ValueError(f"{path}: auto_driving must be {' or '.join(DRIVING_STYLES)}, got {settings['auto_driving']!r}")
     pivot = settings['pivot_above_deg']
@@ -106,9 +112,16 @@ def checked_limits(settings: dict[str, Any], max_speed: float | None, top_speed:
     return speed, turn_rate
 
 
-def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn_rate: float, trees: str) -> dict:
+def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn_rate: float, trees: str,
+                    localization: str = 'slam') -> dict:
     """config/nav2_params.yaml with the values that come from autonomy.yaml filled in; `trees` is the
-    behavior_trees folder (bt_navigator loads both default trees at start, so neither may need BackUp)."""
+    behavior_trees folder (bt_navigator loads both default trees at start, so neither may need BackUp).
+
+    localization 'gps': no RTAB-Map map to plan on (RTAB-Map only records). The global costmap is a window of
+    gps_window_m around the rover, built from what the camera has seen, and Nav2 plans through unknown space; goals
+    further away are reached in stages (goal_manager)."""
+    if localization not in LOCALIZATIONS:
+        raise ValueError(f"localization:={localization}: use {' or '.join(LOCALIZATIONS)}")
     params = copy.deepcopy(template)
 
     def node(name: str) -> dict:
@@ -161,6 +174,13 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
         ground['topic'] = GROUND_TOPIC
         ground['max_obstacle_height'] = height
         ground['raytrace_max_range'] = settings['obstacle_range_m'] + 0.5
+    if localization == 'gps':
+        global_costmap = params['global_costmap']['global_costmap']['ros__parameters']
+        global_costmap['plugins'] = [plugin for plugin in global_costmap['plugins'] if plugin != 'static_layer']
+        global_costmap.pop('static_layer', None)
+        global_costmap['rolling_window'] = True
+        global_costmap['width'] = global_costmap['height'] = int(settings['gps_window_m'])
+        global_costmap['resolution'] = GPS_WINDOW_RESOLUTION_M
     return params
 
 
@@ -203,8 +223,9 @@ def obstacle_parameters(settings: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any]:
-    """RTAB-Map maps continuously (manual and AUTO) from the ZED's colour and depth, odometry from TF (the EKF)."""
+def rtabmap_parameters(settings: dict[str, Any], database: str, localization: str = 'slam') -> dict[str, Any]:
+    """RTAB-Map maps continuously (manual and AUTO) from the ZED's colour and depth, odometry from TF (the EKF).
+    In the GPS mode it only records (the map and the GPS fixes, in its database): ekf_global corrects the drift."""
     return {
         'frame_id': 'base_footprint',
         'odom_frame_id': 'odom',
@@ -222,7 +243,7 @@ def rtabmap_parameters(settings: dict[str, Any], database: str) -> dict[str, Any
         'qos_camera_info': 2,
         'wait_for_transform': 0.5,
         'database_path': database,
-        'publish_tf': True,  # map -> odom
+        'publish_tf': localization == 'slam',  # map -> odom; in the GPS mode ekf_global publishes it
         'Reg/Force3DoF': 'true',  # a ground rover: x, y, yaw
         'RGBD/NeighborLinkRefining': 'true',
         'Grid/Sensor': '1',  # the grid from the depth image (Grid/FromDepth before 0.21; the old name only warns)

@@ -52,6 +52,7 @@
     gps_x_m: 0.0                 # forward of the rover's centre
     gps_y_m: 0.0                 # left of the centre line
     gps_z_m: 0.9                 # above the ground
+    gps_window_m: 100.0          # GPS mode: Nav2 plans in this square around the rover (goals further away: in stages)
 
 drive_mux:
   ros__parameters:
@@ -98,6 +99,12 @@ gps_node:
     gps_min_satellites: 5        # fixes from fewer satellites are not used
     gps_max_hdop: 3.0            # ... nor fixes with a larger HDOP
     gps_setup: ''                # commands sent at every start, separated by ';' (e.g. 'PAIR410,1' for SBAS): AUTONOMY.md
+
+gps_alignment:
+  ros__parameters:
+    min_track_m: 15.0            # the rover drives this far (straight or curved) before the GPS's heading is known
+    refit_every_m: 10.0          # the heading is worked out again after this much more ...
+    freeze_track_m: 100.0        # ... until the track is this long (later changes would turn the map under the rover)
 
 goal_manager:
   ros__parameters:

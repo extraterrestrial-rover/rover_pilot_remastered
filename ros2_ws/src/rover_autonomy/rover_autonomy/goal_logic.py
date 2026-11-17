@@ -61,15 +61,20 @@ class GoalLogic:
     def _heard(self, stamp: float | None, now: float) -> bool:
         return stamp is not None and now - stamp <= self.link_timeout_s
 
-    def on_goal(self, goal: Any, now: float) -> list[Action]:
+    def refusal(self, now: float) -> str:
+        """'' if a new goal may start now; else why not."""
         if not self._heard(self._estop_time, now):
-            self.events.append('goal ignored: the base station is not heard')
-            return []
+            return 'the base station is not heard'
         if self._estop:
-            self.events.append('goal ignored: the e-stop is latched')
-            return []
+            return 'the e-stop is latched'
         if not (self._heard(self._auto_time, now) and self._auto):
-            self.events.append('goal ignored: not in AUTO (press the AUTO button first)')
+            return 'not in AUTO (press the AUTO button first)'
+        return ''
+
+    def on_goal(self, goal: Any, now: float) -> list[Action]:
+        refusal = self.refusal(now)
+        if refusal:
+            self.events.append(f'goal ignored: {refusal}')
             return []
         self.events.append('goal accepted' if self.goal is None else 'new goal replaces the current one')
         self.goal, self._lost = goal, False
@@ -96,6 +101,18 @@ class GoalLogic:
             self.events.append('base station lost: the rover goes on to its goal and stops there (only the kill '
                                'switch stops it now)')
         return []
+
+    def continue_with(self, goal: Any) -> list[Action]:
+        """The next stage of the goal that runs (a leg towards a far GPS waypoint): sent as it is, like the goal itself
+        goes on, also without the base station; nothing if no goal runs."""
+        if self.goal is None:
+            return []
+        self.goal = goal
+        return [Action(SEND, goal)]
+
+    def cancel(self, why: str) -> list[Action]:
+        """Cancelled from the base station (gps_goals cancel)."""
+        return self._cancel(why) if self.goal is not None else []
 
     def _cancel(self, why: str) -> list[Action]:
         self.events.append(f'goal cancelled: {why}')

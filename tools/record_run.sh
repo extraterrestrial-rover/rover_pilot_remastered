@@ -22,6 +22,7 @@ TOPICS=(
   /plan /local_plan /map
   /local_costmap/costmap /local_costmap/published_footprint
   /global_costmap/costmap /global_costmap/published_footprint
+  /gps/fix /odometry/gps /odometry/global /rover/gps_status /rover/gps_datum /rover/gps_command /rover/gps_waypoints
 )
 CLOUD=/zed/zed_node/point_cloud/cloud_registered
 PACKAGES='ros-humble-tf2 ros-humble-tf2-ros ros-humble-navigation2 ros-humble-nav2-costmap-2d ros-humble-rtabmap ros-humble-rtabmap-ros ros-humble-robot-localization ros-humble-rmw-cyclonedds-cpp ros-humble-cyclonedds'

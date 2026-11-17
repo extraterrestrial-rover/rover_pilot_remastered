@@ -120,3 +120,30 @@ def test_a_silent_drive_mux_cancels_the_goal():
     logic.on_auto(True, 2.2)
     logic.on_estop(False, 2.2)
     assert logic.update(2.2) == [Action(CANCEL)]  # its last report is 1.2 s old
+
+
+def test_the_legs_of_a_far_gps_waypoint_go_on_like_the_goal_itself():
+    logic = running()
+    later(logic, 1.0)  # the base station falls silent while the waypoint's first leg runs
+    assert logic.continue_with('leg 2') == [Action(SEND, 'leg 2')] and logic.active  # the next leg goes on
+    assert logic.on_goal('B', 1.1) == [] and 'not heard' in logic.events[-1]  # but nothing new starts
+    idle = GoalLogic()
+    assert idle.continue_with('leg') == [] and not idle.active  # no goal running: nothing to continue
+
+
+def test_a_goal_can_be_cancelled_from_the_base_station():
+    logic = running()
+    assert logic.cancel('cancelled from the base station') == [Action(CANCEL)] and not logic.active
+    assert logic.events[-1] == 'goal cancelled: cancelled from the base station'
+    assert logic.cancel('again') == []
+
+
+def test_why_a_new_goal_may_not_start():
+    logic = GoalLogic()
+    assert logic.refusal(0.0) == 'the base station is not heard'
+    heard(logic, 0.0, auto=False)
+    assert logic.refusal(0.1).startswith('not in AUTO')
+    heard(logic, 0.2, estop=True)
+    assert logic.refusal(0.2) == 'the e-stop is latched'
+    heard(logic, 0.3)
+    assert logic.refusal(0.3) == ''

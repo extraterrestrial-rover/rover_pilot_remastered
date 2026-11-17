@@ -65,6 +65,44 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
+    - Class: rviz_default_plugins/MarkerArray
+      Name: GPS waypoints (GPS mode; the orange one is next)
+      Enabled: true
+      Value: true
+      Namespaces:
+        {}
+      Topic:
+        Value: /rover/gps_waypoints
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/Odometry
+      Name: GPS fixes (GPS mode)
+      Enabled: true
+      Value: true
+      Keep: 300
+      Position Tolerance: 0.5
+      Angle Tolerance: 6.28
+      Shape:
+        Value: Axes
+        Axes Length: 0.3
+        Axes Radius: 0.05
+      Covariance:
+        Value: false
+      Topic:
+        Value: /odometry/gps
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+    - Class: rviz_default_plugins/Axes
+      Name: East (red) and north (green), GPS mode
+      Enabled: true
+      Value: true
+      Reference Frame: enu
+      Length: 3
+      Radius: 0.08
     - Class: rviz_default_plugins/Path
       Name: Planned path
       Enabled: true
