@@ -48,6 +48,11 @@
 
     map_database: ~/.ros/rover_map.db  # RTAB-Map's map. A fresh run keeps the previous one as rover_map-<time>.db
 
+    # The GPS antenna (the top of the Quectel L89HA board) relative to base_footprint, for the GPS mode. MEASURE.
+    gps_x_m: 0.0                 # forward of the rover's centre
+    gps_y_m: 0.0                 # left of the centre line
+    gps_z_m: 0.9                 # above the ground
+
 drive_mux:
   ros__parameters:
     rate_hz: 50.0
@@ -84,6 +89,15 @@ drive_mux:
     # base station is back. Nothing at the base station can stop the rover on that stretch (the kill switch can).
     goal_timeout_s: 0.5          # /rover/goal_active older than this: no goal is running
     linkless_limit_s: 0.0        # the longest such stretch, in seconds, before the rover stops anyway (0.0 = no limit)
+
+gps_node:
+  ros__parameters:
+    gps_port: /dev/rover-gps     # the udev rule's name (AUTONOMY.md, "GPS")
+    gps_baud: 9600               # the L89HA's factory setting
+    gps_uere_m: 1.5              # m: horizontal standard deviation of a fix at HDOP 1 (L89HA: under 1.8 m CEP)
+    gps_min_satellites: 5        # fixes from fewer satellites are not used
+    gps_max_hdop: 3.0            # ... nor fixes with a larger HDOP
+    gps_setup: ''                # commands sent at every start, separated by ';' (e.g. 'PAIR410,1' for SBAS): AUTONOMY.md
 
 goal_manager:
   ros__parameters:

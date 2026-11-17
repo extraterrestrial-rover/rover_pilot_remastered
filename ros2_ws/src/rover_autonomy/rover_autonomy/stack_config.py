@@ -20,7 +20,7 @@ SETTINGS = (
     'min_obstacle_height_m', 'obstacle_range_m', 'zed_x_m', 'zed_y_m', 'zed_z_m', 'zed_pitch_rad', 'zed_camera_name',
     'zed_odom_topic', 'zed_cloud_topic', 'zed_rgb_topic', 'zed_rgb_info_topic', 'zed_depth_topic', 'map_database',
 )
-NUMBERS = {name for name in SETTINGS if name.endswith(('_m', '_rad', '_speed', '_rate'))}
+NUMBERS = {name for name in SETTINGS if name.endswith(('_m', '_rad', '_speed', '_rate'))} | {'gps_x_m', 'gps_y_m', 'gps_z_m'}
 OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before they existed still loads
     'max_ground_slope_deg': 45.0,
     'obstacle_min_points': 10,
@@ -28,6 +28,9 @@ OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before th
     'pivot_above_deg': 115.0,
     'turn_to_goal_heading': True,
     'goal_heading_tolerance_deg': 15.0,
+    'gps_x_m': 0.0,
+    'gps_y_m': 0.0,
+    'gps_z_m': 0.9,
 }
 DRIVING_STYLES = ('arcs', 'pivot')  # auto_driving: Pure Pursuit (arcs), or DWB turning on the spot (before arcs)
 OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles_detection's clouds, for the costmaps
@@ -244,6 +247,9 @@ def urdf_mappings(settings: dict[str, Any], wheel_diameter_m: float) -> dict[str
         'zed_y': f'{settings["zed_y_m"]:g}',
         'zed_z': f'{settings["zed_z_m"]:g}',
         'zed_pitch': f'{settings["zed_pitch_rad"]:g}',
+        'gps_x': f'{settings["gps_x_m"]:g}',
+        'gps_y': f'{settings["gps_y_m"]:g}',
+        'gps_z': f'{settings["gps_z_m"]:g}',
     }
 
 

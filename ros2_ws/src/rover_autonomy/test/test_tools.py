@@ -2,8 +2,10 @@
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from rover_autonomy import stack_config
@@ -50,3 +52,27 @@ def test_rviz_shows_what_nav2_takes_for_obstacles():
     assert clouds[stack_config.OBSTACLES_TOPIC]['Topic']['Reliability Policy'] == 'Best Effort'  # as the detector sends
     settings = yaml.safe_load((PACKAGE / 'config' / 'autonomy.yaml').read_text())['/**']['ros__parameters']
     assert clouds[settings['zed_cloud_topic']]['Enabled'] is False
+
+
+def test_the_gps_has_a_name_of_its_own():
+    """The GPS board and the drive ESP32 both came with the CP2102 serial number 0001: matched by that, /dev/rover-drive
+    could land on the GPS. The GPS gets a serial number of its own (AUTONOMY.md) and its own rule."""
+    gps = (REPO / 'udev' / '99-rover-gps.rules').read_text()
+    rules = [line for line in gps.splitlines() if line.startswith('SUBSYSTEM')]
+    assert len(rules) == 1 and 'ATTRS{serial}=="ROVERGPS"' in rules[0] and 'SYMLINK+="rover-gps"' in rules[0]
+    assert 'ID_MM_DEVICE_IGNORE' in rules[0]
+    drive = (REPO / 'udev' / '99-rover-drive.rules').read_text()
+    assert 'ROVERGPS' not in drive and 'rover-gps' not in drive
+    settings = yaml.safe_load((PACKAGE / 'config' / 'autonomy.yaml').read_text())
+    assert settings['gps_node']['ros__parameters']['gps_port'] == '/dev/rover-gps'
+
+
+def test_the_gps_bench_check_runs_without_ros(tmp_path):
+    pytest.importorskip('serial')  # pyserial, as on the rover laptop
+    tool = REPO / 'tools' / 'gps_check.py'
+    assert os.access(tool, os.X_OK)
+    usage = subprocess.run([sys.executable, str(tool), '--help'], capture_output=True, text=True)
+    assert usage.returncode == 0 and '--send' in usage.stdout
+    missing = subprocess.run([sys.executable, str(tool), str(tmp_path / 'no-such-port'), '--seconds', '1'],
+                             capture_output=True, text=True)
+    assert missing.returncode == 1 and 'cannot open' in missing.stdout

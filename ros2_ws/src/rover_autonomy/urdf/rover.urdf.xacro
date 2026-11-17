@@ -14,6 +14,9 @@
   <xacro:arg name="zed_y" default="0.0"/>
   <xacro:arg name="zed_z" default="0.6"/>
   <xacro:arg name="zed_pitch" default="0.0"/>
+  <xacro:arg name="gps_x" default="0.0"/>
+  <xacro:arg name="gps_y" default="0.0"/>
+  <xacro:arg name="gps_z" default="0.9"/>
 
   <xacro:property name="r" value="$(arg wheel_radius)"/>
   <xacro:property name="body_height" value="0.2"/>
@@ -43,5 +46,13 @@
     <parent link="base_link"/>
     <child link="$(arg zed_name)_camera_link"/>
     <origin xyz="$(arg zed_x) $(arg zed_y) ${$(arg zed_z) - r}" rpy="0 $(arg zed_pitch) 0"/>
+  </joint>
+
+  <!-- The GPS antenna: the top face of the L89HA board (the GPS mode corrects positions by this offset). -->
+  <link name="gps_link"/>
+  <joint name="gps_mount_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="gps_link"/>
+    <origin xyz="$(arg gps_x) $(arg gps_y) $(arg gps_z)" rpy="0 0 0"/>
   </joint>
 </robot>

@@ -29,6 +29,7 @@ setup(
             'goal_manager = rover_autonomy.goal_manager:main',
             'zed_odometry = rover_autonomy.zed_odometry:main',
             'mount_check = rover_autonomy.mount_check:main',
+            'gps_node = rover_autonomy.gps_node:main',
         ],
     },
 )

@@ -243,6 +243,7 @@ def test_rtabmap_and_urdf_follow_the_settings():
     assert rtabmap['approx_sync'] is False  # colour and depth of the same frame, never of neighbouring ones
     urdf = stack_config.urdf_mappings(SETTINGS, 0.28)
     assert urdf['wheel_radius'] == '0.14' and urdf['zed_name'] == 'zed'
+    assert (urdf['gps_x'], urdf['gps_y'], urdf['gps_z']) == ('0', '0', '0.9')  # the GPS antenna
 
 
 def test_the_behaviour_tree_uses_only_loaded_behaviours():

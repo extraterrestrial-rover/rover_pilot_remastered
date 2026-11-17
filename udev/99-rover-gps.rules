@@ -1,0 +1,9 @@
+# Stable name for the Quectel L89HA GPS board (its own CP2102 USB-serial bridge): /dev/rover-gps
+# Install on the rover computer (AUTONOMY.md, "GPS"):
+#   sudo cp 99-rover-gps.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+#
+# The GPS board and the drive ESP32 both left the factory with the CP2102 serial number 0001, so neither can be told
+# apart by it. AUTONOMY.md, "GPS", writes ROVERGPS into the GPS board's CP2102 once (cp210x-program); this rule matches
+# that. ID_MM_DEVICE_IGNORE keeps ModemManager from probing the port.
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="ROVERGPS", SYMLINK+="rover-gps", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"
