@@ -94,6 +94,7 @@ class Rover:
         self.mount = (SETTINGS['zed_x_m'], SETTINGS['zed_y_m'])
         self.x, self.y, self.yaw = -self.mount[0], -self.mount[1], 0.0  # base_footprint
         self.pitch = 0.0  # the rover's real tilt, nose down positive, which nothing in the software knows about
+        self.pivots: list[tuple[float, float, float]] = []  # (x, y, angle) of every bit turned on the spot
         self.deadband = TRUE_DEADBAND  # what the motors need on the ground the rover stands on
         self.lock = threading.Lock()
         # The camera's rays, in its own frame (x forward, y left, z up): the ZED 2i's 110 x 70 degree view.
@@ -129,6 +130,8 @@ class Rover:
             self.yaw += turn * dt
             self.x += speed * math.cos(self.yaw) * dt
             self.y += speed * math.sin(self.yaw) * dt
+            if abs(speed) < 0.05 and abs(turn) > 0.1:  # turning on the spot, not rolling through a curve
+                self.pivots.append((self.x, self.y, abs(turn) * dt))
 
     def pose(self) -> tuple[float, float, float]:
         with self.lock:
@@ -246,6 +249,8 @@ class Rehearsal:
                                                                             reliability=ReliabilityPolicy.RELIABLE))
         self.goals = node.create_publisher(PoseStamped, '/goal_pose', 10)
         node.create_subscription(String, '/rover/autonomy_events', lambda m: self.events.append(m.data), 50)
+        self.fault: str | None = None  # drive_mux's /rover/auto_fault, as last heard
+        node.create_subscription(String, '/rover/auto_fault', lambda m: setattr(self, 'fault', m.data), LATEST_ONLY)
         node.create_subscription(OccupancyGrid, '/local_costmap/costmap', lambda m: setattr(self, 'costmap', m),
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE))
         self.static_tf = StaticTransformBroadcaster(node)
@@ -508,6 +513,24 @@ class Rehearsal:
         self.check('EKF (odom -> base_footprint) matches the rover', error is not None and error[0] < 0.1,
                    f'{error[0]:.3f} m off: {error[1]}' if error is not None else 'no transform')
 
+        print('\n3a. Arcs: a goal off to the side is reached rolling, then the rover turns to the arrow', flush=True)
+        x, y, yaw = self.rover.pose()
+        ahead, left = 3.5, 2.5  # in the rover's frame when the goal is given
+        target = (x + ahead * math.cos(yaw) - left * math.sin(yaw), y + ahead * math.sin(yaw) + left * math.cos(yaw))
+        arrow = yaw - math.pi / 2  # pointing to the rover's right: a quarter turn on the spot at the end
+        before = len(self.rover.pivots)
+        since = len(self.events)
+        self.goal(*target, yaw=arrow)
+        reached = self.event('goal reached', 90.0, since)
+        time.sleep(1.0)
+        on_the_way = sum(angle for px, py, angle in self.rover.pivots[before:] if math.hypot(px - target[0], py - target[1]) > 0.5)
+        off = abs(math.remainder(self.rover.pose()[2] - arrow, 2 * math.pi))
+        tolerance = math.radians(AUTONOMY['/**']['ros__parameters'].get('goal_heading_tolerance_deg', 15.0))
+        self.check('on the way the rover rolls through the curve (no turning on the spot)',
+                   reached and math.degrees(on_the_way) < 15.0, f'{math.degrees(on_the_way):.0f} degrees turned on the spot on the way')
+        self.check('at the goal it turns to the arrow', reached and self.rover.distance_to(*target) < 0.5 and off < tolerance + math.radians(5),
+                   f'{math.degrees(off):.0f} degrees from the arrow, {self.rover.distance_to(*target):.2f} m from the goal; {self.where()}')
+
         print('\n3b. Goals in a moving frame, and goals that bypass goal_manager', flush=True)
         since = len(self.events)
         x, y, yaw = self.rover.pose()
@@ -549,7 +572,11 @@ class Rehearsal:
                            self.event('has lost track of the rover', 6.0, since) and self.holds_still(2.0))
             finally:
                 os.kill(int(ekf[0]), signal.SIGCONT)
-            time.sleep(3.0)
+            # The costmaps catch up within seconds (in the rehearsal's VM up to ten); the next goal must wait for that.
+            cleared = time.monotonic() + 30.0
+            while time.monotonic() < cleared and self.fault != '':
+                time.sleep(0.1)
+            self.check("the transforms are back: AUTO is ready again", self.fault == '', f'fault: {self.fault!r}')
 
         print('\n3d. Ground that needs more than the measured deadband', flush=True)
         # The settings say 20 and 60 rpm. Here a turn on the spot needs 70: Nav2's turn commands come out at 68 at most,

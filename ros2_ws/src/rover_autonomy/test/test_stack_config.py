@@ -1,4 +1,5 @@
 """stack_config: the autonomy stack's parameters built from config/autonomy.yaml at launch time."""
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -21,15 +22,19 @@ def build(speed=0.5, turn_rate=0.8, **changes):
 def test_auto_speed_and_turn_rate_reach_every_nav2_limit():
     params = build(speed=0.3, turn_rate=0.6)
     follow = params['controller_server']['ros__parameters']['FollowPath']
-    assert follow['max_vel_x'] == follow['max_speed_xy'] == 0.3 and follow['max_vel_theta'] == 0.6
-    assert follow['min_vel_x'] == 0.0  # never reverses
+    assert follow['desired_linear_vel'] == 0.3 and follow['rotate_to_heading_angular_vel'] == 0.6
+    assert follow['allow_reversing'] is False  # never reverses
+    pivot = build(speed=0.3, turn_rate=0.6, auto_driving='pivot')['controller_server']['ros__parameters']['FollowPath']
+    assert pivot['max_vel_x'] == pivot['max_speed_xy'] == 0.3 and pivot['max_vel_theta'] == 0.6
+    assert pivot['min_vel_x'] == 0.0  # never reverses
     smoother = params['velocity_smoother']['ros__parameters']
     assert smoother['max_velocity'] == [0.3, 0.0, 0.6] and smoother['min_velocity'] == [0.0, 0.0, -0.6]
     assert params['behavior_server']['ros__parameters']['max_rotational_vel'] == 0.6
     navigator = params['bt_navigator']['ros__parameters']
     assert navigator['default_nav_to_pose_bt_xml'] == '/trees/navigate_to_pose.xml'
     assert navigator['default_nav_through_poses_bt_xml'] == '/trees/navigate_through_poses.xml'
-    assert TEMPLATE['controller_server']['ros__parameters']['FollowPath']['max_vel_x'] == 0.5  # template untouched
+    template = TEMPLATE['controller_server']['ros__parameters']  # untouched
+    assert template['FollowPath']['desired_linear_vel'] == 0.5 and template['PivotController']['max_vel_x'] == 0.5
 
 
 def test_the_outline_and_the_obstacles_reach_both_costmaps():
@@ -132,8 +137,41 @@ def test_paths_keep_a_distance_from_obstacles():
 
 
 def test_the_whole_outline_is_checked_against_obstacles():
-    critics = TEMPLATE['controller_server']['ros__parameters']['FollowPath']['critics']
+    critics = TEMPLATE['controller_server']['ros__parameters']['PivotController']['critics']
     assert 'ObstacleFootprint' in critics and 'BaseObstacle' not in critics  # BaseObstacle: only the centre cell
+    # Pure Pursuit checks the footprint along the arc ahead, and stops before it would hit something.
+    assert TEMPLATE['controller_server']['ros__parameters']['FollowPath']['use_collision_detection'] is True
+
+
+def test_auto_rolls_through_curves():
+    """DWB stopped and turned on the spot wherever the path bent: in the lab about two thirds of all its turning,
+    160 to 260 degrees per goal in 2 to 4 stops. Pure Pursuit drives arcs and turns on the spot only for a path that
+    starts behind the rover: about 2 degrees per goal on the same goals."""
+    controller = build()['controller_server']['ros__parameters']
+    follow = controller['FollowPath']
+    assert follow['plugin'] == 'nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController'
+    assert 'PivotController' not in controller  # one controller only, under the name the behaviour trees use
+    assert follow['rotate_to_heading_min_angle'] == pytest.approx(math.radians(SETTINGS['pivot_above_deg']))
+    assert SETTINGS['pivot_above_deg'] >= 90.0  # a goal to the side is reached in an arc
+    assert follow['use_rotate_to_heading'] is True and follow['allow_reversing'] is False
+    local = build()['local_costmap']['local_costmap']['ros__parameters']
+    assert follow['inflation_cost_scaling_factor'] == local['inflation_layer']['cost_scaling_factor']
+    # The smoother limits speed and turning together: limited on its own, the turning would bend the arc.
+    assert build()['velocity_smoother']['ros__parameters']['scale_velocities'] is True
+
+
+def test_the_old_way_of_turning_can_be_chosen():
+    controller = build(auto_driving='pivot')['controller_server']['ros__parameters']
+    assert controller['FollowPath']['plugin'] == 'dwb_core::DWBLocalPlanner' and 'PivotController' not in controller
+    assert TEMPLATE['controller_server']['ros__parameters']['FollowPath']['plugin'].endswith('RegulatedPurePursuitController')
+
+
+def test_the_rover_turns_to_the_arrow_at_the_goal_or_not():
+    checker = build()['controller_server']['ros__parameters']['general_goal_checker']
+    assert SETTINGS['turn_to_goal_heading'] is True
+    assert checker['yaw_goal_tolerance'] == pytest.approx(math.radians(SETTINGS['goal_heading_tolerance_deg']))
+    loose = build(turn_to_goal_heading=False)['controller_server']['ros__parameters']['general_goal_checker']
+    assert loose['yaw_goal_tolerance'] > math.pi  # any heading will do: the goal is reached on arrival
 
 
 def test_speed_limits_are_checked():
@@ -170,9 +208,19 @@ def test_settings_are_checked(tmp_path):
         stack_config.load_settings(write(obstacle_min_points=0))
     with pytest.raises(ValueError, match='at most 1.6 m'):
         stack_config.load_settings(write(rover_height_m=2.0, zed_z_m=1.8))
-    # A settings file from before these two existed (a copy kept on the rover) still loads, with the defaults.
-    older = stack_config.load_settings(write(max_ground_slope_deg=None, obstacle_min_points=None))
-    assert (older['max_ground_slope_deg'], older['obstacle_min_points']) == (45.0, 10)
+    with pytest.raises(ValueError, match='auto_driving must be arcs or pivot'):
+        stack_config.load_settings(write(auto_driving='ackermann'))
+    with pytest.raises(ValueError, match='pivot_above_deg'):
+        stack_config.load_settings(write(pivot_above_deg=2.0))  # radians typed for degrees
+    with pytest.raises(ValueError, match='turn_to_goal_heading'):
+        stack_config.load_settings(write(turn_to_goal_heading='yes'))
+    with pytest.raises(ValueError, match='goal_heading_tolerance_deg'):
+        stack_config.load_settings(write(goal_heading_tolerance_deg=0.26))
+    # A settings file from before these existed (a copy kept on the rover) still loads, with the defaults.
+    new = ('max_ground_slope_deg', 'obstacle_min_points', 'auto_driving', 'pivot_above_deg', 'turn_to_goal_heading',
+           'goal_heading_tolerance_deg')
+    older = stack_config.load_settings(write(**dict.fromkeys(new)))
+    assert tuple(older[name] for name in new) == (45.0, 10, 'arcs', 115.0, True, 15.0)
 
 
 def test_a_fresh_map_keeps_the_previous_one(tmp_path):

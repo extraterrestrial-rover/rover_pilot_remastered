@@ -24,7 +24,12 @@ NUMBERS = {name for name in SETTINGS if name.endswith(('_m', '_rad', '_speed', '
 OPTIONAL = {  # settings with a default, so that an autonomy.yaml from before they existed still loads
     'max_ground_slope_deg': 45.0,
     'obstacle_min_points': 10,
+    'auto_driving': 'arcs',
+    'pivot_above_deg': 115.0,
+    'turn_to_goal_heading': True,
+    'goal_heading_tolerance_deg': 15.0,
 }
+DRIVING_STYLES = ('arcs', 'pivot')  # auto_driving: Pure Pursuit (arcs), or DWB turning on the spot (before arcs)
 OBSTACLES_TOPIC, GROUND_TOPIC = '/rover/obstacles', '/rover/ground'  # obstacles_detection's clouds, for the costmaps
 GROUND_LOWEST_M = -1.0  # points further below the rover than this are not looked at
 VOXEL_HEIGHT_M, MAX_VOXELS = 0.1, 16  # the costmaps' voxel layer (Nav2 allows 16 voxels in a column)
@@ -54,6 +59,16 @@ def load_settings(path: str | Path) -> dict[str, Any]:
     points = settings['obstacle_min_points']
     if isinstance(points, bool) or not isinstance(points, int) or points < 1:
         raise ValueError(f'{path}: obstacle_min_points must be a whole number, 1 or more, got {points!r}')
+    if settings['auto_driving'] not in DRIVING_STYLES:
+        raise ValueError(f"{path}: auto_driving must be {' or '.join(DRIVING_STYLES)}, got {settings['auto_driving']!r}")
+    pivot = settings['pivot_above_deg']
+    if isinstance(pivot, bool) or not isinstance(pivot, (int, float)) or not 30 <= pivot <= 180:
+        raise ValueError(f'{path}: pivot_above_deg must be between 30 and 180, got {pivot!r}')
+    if not isinstance(settings['turn_to_goal_heading'], bool):
+        raise ValueError(f"{path}: turn_to_goal_heading must be true or false, got {settings['turn_to_goal_heading']!r}")
+    tolerance = settings['goal_heading_tolerance_deg']
+    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or not 3 <= tolerance <= 90:
+        raise ValueError(f'{path}: goal_heading_tolerance_deg must be between 3 and 90, got {tolerance!r}')
     if max(settings['rover_height_m'], settings['zed_z_m']) > VOXEL_HEIGHT_M * MAX_VOXELS:
         raise ValueError(f'{path}: rover_height_m and zed_z_m must be at most {VOXEL_HEIGHT_M * MAX_VOXELS:g} m (the '
                          "costmaps' obstacle layer reaches that high)")
@@ -96,9 +111,23 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
     def node(name: str) -> dict:
         return params[name]['ros__parameters']
 
-    follow = node('controller_server')['FollowPath']
-    follow['max_vel_x'] = follow['max_speed_xy'] = speed
-    follow['max_vel_theta'] = turn_rate
+    controller = node('controller_server')
+    pivot = controller.pop('PivotController')
+    if settings['auto_driving'] == 'pivot':
+        controller['FollowPath'] = pivot  # DWB, under the name the behaviour trees use
+        follow = controller['FollowPath']
+        follow['max_vel_x'] = follow['max_speed_xy'] = speed
+        follow['max_vel_theta'] = turn_rate
+    else:
+        follow = controller['FollowPath']
+        follow['desired_linear_vel'] = speed
+        follow['rotate_to_heading_angular_vel'] = turn_rate
+        follow['rotate_to_heading_min_angle'] = math.radians(settings['pivot_above_deg'])
+        follow['use_rotate_to_heading'] = True  # for a path that starts behind, and the turn to the arrow at the goal
+    # The arrow clicked in RViz: turn to it at the goal, or arrive in whatever heading the rover came in.
+    checker = controller['general_goal_checker']
+    checker['yaw_goal_tolerance'] = (math.radians(settings['goal_heading_tolerance_deg'])
+                                     if settings['turn_to_goal_heading'] else 3.15)
     smoother = node('velocity_smoother')
     smoother['max_velocity'] = [speed, 0.0, turn_rate]
     smoother['min_velocity'] = [0.0, 0.0, -turn_rate]
@@ -110,6 +139,8 @@ def nav2_parameters(template: dict, settings: dict[str, Any], speed: float, turn
         costmap_params = params[costmap][costmap]['ros__parameters']
         costmap_params['footprint'] = outline
         costmap_params['inflation_layer']['inflation_radius'] = settings['inflation_radius_m']
+        if costmap == 'local_costmap' and settings['auto_driving'] == 'arcs':  # Pure Pursuit reads the local one
+            follow['inflation_cost_scaling_factor'] = costmap_params['inflation_layer']['cost_scaling_factor']
         layer = costmap_params['obstacle_layer']
         height = settings['rover_height_m']
         # The voxels reach the rover's height, and above the camera: Nav2 cannot clear from a camera outside them.

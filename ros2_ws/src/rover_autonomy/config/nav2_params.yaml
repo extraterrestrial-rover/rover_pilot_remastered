@@ -82,8 +82,39 @@ controller_server:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: true
       xy_goal_tolerance: 0.3
-      yaw_goal_tolerance: 0.5    # skid steer with a deadband turns coarsely: a tight yaw tolerance oscillates
+      yaw_goal_tolerance: 0.26   # from autonomy.yaml (goal_heading_tolerance_deg; 3.15 without turn_to_goal_heading)
+    # auto_driving: arcs (autonomy.yaml). Regulated Pure Pursuit steers towards a point about a metre ahead on the
+    # path, so the rover rolls through curves instead of stopping to turn on the spot. It turns on the spot only when
+    # the path starts behind the rover (pivot_above_deg) and, at the goal, to the arrow clicked in RViz.
     FollowPath:
+      plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
+      desired_linear_vel: 0.5    # from autonomy.yaml
+      lookahead_dist: 0.8
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 1.5
+      lookahead_time: 1.8
+      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 0.3
+      min_approach_linear_velocity: 0.08
+      approach_velocity_scaling_dist: 0.8
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.5
+      use_regulated_linear_velocity_scaling: true  # slower in tight curves ...
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.15
+      use_cost_regulated_linear_velocity_scaling: true  # ... and close to obstacles
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0  # from the inflation layer's cost_scaling_factor
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 2.0   # from autonomy.yaml (pivot_above_deg)
+      rotate_to_heading_angular_vel: 0.8  # from autonomy.yaml (auto_max_turn_rate)
+      max_angular_accel: 2.0
+      allow_reversing: false     # never reverses: the camera looks forward only
+      use_interpolation: true
+    # auto_driving: pivot. The controller before arcs (DWB): it turns on the spot whenever the path bends. The launch
+    # copies it to FollowPath; it is kept here to go back to without editing this file.
+    PivotController:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
       min_vel_x: 0.0             # never reverses: the camera looks forward only
@@ -277,7 +308,7 @@ behavior_server:
 velocity_smoother:
   ros__parameters:
     smoothing_frequency: 20.0
-    scale_velocities: false
+    scale_velocities: true           # limit a change of speed and of turning together, so an arc keeps its shape
     feedback: OPEN_LOOP
     max_velocity: [0.5, 0.0, 0.8]    # from autonomy.yaml
     min_velocity: [0.0, 0.0, -0.8]   # from autonomy.yaml

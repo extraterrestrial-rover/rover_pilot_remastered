@@ -5,6 +5,13 @@
   ros__parameters:
     auto_max_speed: 0.5          # m/s: AUTO's top speed (for one run: launch argument max_speed:=0.3)
     auto_max_turn_rate: 0.8      # rad/s: AUTO's top turning rate
+    # How AUTO turns. arcs: it rolls through curves (Nav2's Regulated Pure Pursuit), and turns on the spot only when
+    # the path starts more than pivot_above_deg off its heading (a goal behind it). pivot: it stops and turns on the
+    # spot wherever the path bends (Nav2's DWB, as before arcs).
+    auto_driving: arcs
+    pivot_above_deg: 115.0
+    turn_to_goal_heading: true   # at the goal, turn on the spot to the arrow clicked in RViz (false: arrive as it comes)
+    goal_heading_tolerance_deg: 15.0  # ... to within this many degrees
 
     # The rover's outline for the costmaps, centred on base_footprint: the ground point midway between the four
     # wheels. MEASURE: these are placeholders.
