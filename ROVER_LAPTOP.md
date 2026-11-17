@@ -197,6 +197,11 @@ sudo cp ~/rover_pilot_remastered/udev/99-rover-drive.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger && ls -l /dev/rover-drive
 ```
 
+**The GPS (Quectel L89HA board), for the GPS mode.** Its board has a CP2102 like the ESP32, with the same serial number
+`0001`: before both are plugged in at once, give the GPS board's chip its own serial number and install its rule
+(AUTONOMY.md, "GPS": the commands, a backup first). Until then don't leave the GPS plugged in while you drive:
+`/dev/rover-drive` could land on it. Afterwards `ls -l /dev/rover-drive /dev/rover-gps` shows two different ports.
+
 ## 8. Network: the MikroTik link and SSH
 
 Connect the laptop's Ethernet port to the rover's MikroTik and power the radio. Give the port the rover's address:
@@ -326,6 +331,9 @@ A launch started outside tmux dies with the SSH session.
 | `camera mount check:` warns at the start | the camera's height or pitch differs from `autonomy.yaml`: set the printed values and rebuild (the rover must stand on flat ground for the check) |
 | AUTO stops with "no obstacle data from the camera" | the ZED's point cloud stopped, or `obstacles_detection` is not running (`ros2 topic hz /rover/obstacles`) |
 | A run went wrong and the console doesn't say why | record the next one: `tools/record_run.sh <name>` (AUTONOMY.md, "When a run goes wrong") |
+| `/dev/rover-drive` points at the GPS board; the rover doesn't drive with the GPS plugged in | both CP2102s report serial 0001: rename the GPS board's (AUTONOMY.md, "GPS") |
+| GPS mode: GPS waypoints are refused, "GPS heading unknown" | drive about 15 m first (by hand or to an RViz goal): the rover finds north from its track |
+| `gps_node`: "no NMEA from /dev/rover-gps" | the wrong port or baud rate; `python3 tools/gps_check.py` with the launch stopped |
 | The launch ended when SSH dropped | it ran outside tmux: always `tmux new -A -s rover` first |
 | The laptop went to sleep in the rover | step 9: check `grep HandleLidSwitch /etc/systemd/logind.conf` and that the masks are in place |
 | ZED wrapper build killed | not enough memory: `colcon build … --parallel-workers 1` |

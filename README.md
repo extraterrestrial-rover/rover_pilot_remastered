@@ -100,6 +100,8 @@ tools/wheel_test.py            ROS-free wheel identification test for the bench
 tools/rehearsal.py             dress rehearsal of the bench test against the simulated ESP32 and PS5
 tools/rehearsal_auto.py        dress rehearsal of AUTO mode: real Nav2 against a simulated rover (AUTONOMY.md)
 tools/record_run.sh            records an autonomy run on the rover laptop (rosbag, launch log, versions)
+tools/rehearsal_gps.py         dress rehearsal of the GPS mode: a simulated L89HA, waypoint lists (AUTONOMY.md, "GPS")
+tools/gps_check.py             checks the L89HA GPS without ROS: satellites, HDOP, how far fixes wander
 tools/profile.py               measures the ESP32's CPU load and memory under worst-case commands (profiling build)
 tools/install_hooks.sh         once per clone: rebuild ros2_ws after every branch switch and pull (tools/git-hooks/)
 LINK.md                        this branch's link: wiring, rover laptop setup, launch arguments, simulator, its files
@@ -260,6 +262,7 @@ rover launch at it, then `ros2 launch rover_pilot_remastered base_station.launch
 # Dress rehearsal of the whole bench test: real launch files, simulated ESP32 and PS5, every stop timed (about 1 min)
 python3 tools/rehearsal.py                                          # ROS sourced and the workspace built; exit 1 on any FAIL
 python3 tools/rehearsal_auto.py                                     # AUTO mode with the real Nav2 (needs Nav2 installed; about 8 min)
+python3 tools/rehearsal_gps.py                                      # the GPS mode: simulated GPS, waypoint lists (about 12 min)
 
 # Test suites
 cd ros2_ws/src/rover_pilot_remastered && python3 -m pytest test   # protocol, kinematics, e-stop logic, end-to-end, ROS integration

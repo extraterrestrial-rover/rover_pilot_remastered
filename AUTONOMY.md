@@ -2,12 +2,14 @@
 
 This branch is `main` plus autonomous navigation. The rover maps its surroundings all the time, with the ZED 2i and
 RTAB-Map, while you drive it with the PS5. Press **Triangle** to switch to AUTO, then click goals in RViz at the base
-station, and Nav2 drives the rover to them. The drive path itself doesn't change: `drive_node`, the firmware, the
+station (or send GPS waypoints, in the GPS mode: "GPS" below), and Nav2 drives the rover to them, rolling through
+curves. The drive path itself doesn't change: `drive_node`, the firmware, the
 e-stop and every stop in the README's safety table work as on `main`, with one exception you chose: when the radio
 drops while the rover drives to a goal, it goes on to that goal ("Situation in AUTO" below).
 
 The stack follows the colleague's `extraterrestrial-rover/sw_Nav2_Hardware`: ZED visual-inertial odometry, a
-robot_localization EKF, RTAB-Map and Nav2 with DWB. It differs where that stack doesn't fit this rover (see
+robot_localization EKF, RTAB-Map and Nav2 (with Regulated Pure Pursuit instead of DWB). It differs where that stack
+doesn't fit this rover (see
 "Compared with sw_Nav2_Hardware").
 
 ```text
@@ -59,6 +61,12 @@ ZED 2i ─odom─▶ zed_odometry ─▶ EKF (odom→base_footprint) ─▶ RTAB
 - **Nav2** never publishes `/cmd_vel`: the controller and the recovery behaviours publish `/cmd_vel_nav`, and the
   velocity smoother turns that into `/cmd_vel_auto` for the mux. `tools/rehearsal_auto.py` checks this on the live
   graph.
+- **Turning: arcs.** The controller is Regulated Pure Pursuit: it steers towards a point about a metre ahead on the
+  planned path, so the rover rolls through curves like it does on the sticks. It turns on the spot only when the path
+  starts behind it (more than `pivot_above_deg`, 115°, off its heading), and at the goal to the arrow you dragged in
+  RViz (to within `goal_heading_tolerance_deg`, 15°). It slows in tight curves and near obstacles, and stops before
+  the arc ahead would touch one; Nav2 then re-plans. `auto_driving: pivot` brings back the controller before arcs
+  (DWB), which stops and turns on the spot wherever the path bends.
 
 ## Controls
 
@@ -175,6 +183,7 @@ Launch arguments (rover):
 | `wheels:=` | wheel_28cm | as on `main`; also at the base station |
 | `zed:=false` | true | the ZED wrapper runs separately (start it with `publish_tf:=false publish_map_tf:=false`) |
 | `slam:=false` | true | no RTAB-Map: something else must provide `/map` and `map → odom` (the rehearsal does) |
+| `localization:=gps` | slam | the GPS mode ("GPS"): the GPS and `ekf_global` correct the drift, RTAB-Map only records |
 | `settings:=` | `config/autonomy.yaml` | another settings file |
 
 **Maps.** RTAB-Map keeps its map in `~/.ros/rover_map.db` (`map_database`). A fresh run moves the previous file to
@@ -189,6 +198,9 @@ run. Both are checked against the rover's top speed (1.39 m/s with the 28 cm whe
 | Setting | Default | Meaning |
 |---|---|---|
 | `auto_max_speed`, `auto_max_turn_rate` | 0.5 m/s, 0.8 rad/s | AUTO's limits (Nav2's controller, smoother, recoveries) |
+| `auto_driving` | arcs | `arcs`: roll through curves (Pure Pursuit); `pivot`: stop and turn on the spot (DWB, before arcs) |
+| `pivot_above_deg` | 115 | arcs: turn on the spot only when the path starts more than this far off the rover's heading |
+| `turn_to_goal_heading`, `goal_heading_tolerance_deg` | true, 15 | at the goal, turn to the RViz arrow, to within this many degrees (false: arrive in any heading) |
 | `rover_length_m`, `rover_width_m`, `rover_height_m` | placeholders | the footprint; points higher than the rover are ignored |
 | `inflation_radius_m` | 1.0 | how far Nav2 plans the rover's centre from obstacles where there is room; keep it at least 0.2 m above the distance from the centre to a corner of the outline (the launch warns) |
 | `min_obstacle_height_m` | 0.1 | obstacles lower than this are driven over (the costmaps leave them out; the map still shows them) |
@@ -198,6 +210,13 @@ run. Both are checked against the rover's top speed (1.39 m/s with the 28 cm whe
 | `zed_x_m` … `zed_pitch_rad` | placeholders | the camera's mount (the URDF and `zed_odometry` use it) |
 | `zed_*_topic` | wrapper 5.x names | the ZED's topics, and `zed_status_topic` its tracking status (`''` = not checked) |
 | `map_database` | `~/.ros/rover_map.db` | RTAB-Map's map |
+| `gps_x_m`, `gps_y_m`, `gps_z_m` | placeholders | the GPS antenna's position (the top of the L89HA board) from the rover's centre point on the ground |
+| `gps_window_m` | 100 | GPS mode: the square around the rover Nav2 plans in |
+| `gps_node`: `gps_port`, `gps_baud` | `/dev/rover-gps`, 9600 | the GPS board's port and speed (the L89HA's factory setting) |
+| `gps_node`: `gps_uere_m`, `gps_min_satellites`, `gps_max_hdop` | 1.5, 5, 3.0 | a fix's standard deviation at HDOP 1; fixes with fewer satellites or a larger HDOP are not used |
+| `gps_node`: `gps_setup` | `''` | commands sent to the L89HA at every start, separated by `;` (see "GPS") |
+| `gps_alignment`: `min_track_m`, `refit_every_m`, `freeze_track_m` | 15, 10, 100 | north from the track: after this much driving, worked out again every 10 m, kept from 100 m on |
+| `goal_manager`: `leg_m`, `max_gps_goal_distance_m` | 40, 1000 | GPS waypoints further than 40 m go in legs; one further than 1 km is refused (swapped latitude and longitude?) |
 | `drive_mux`: `min_wheel_rpm_straight`, `min_wheel_rpm_spin` | 0.0 (not measured) | the deadband |
 | `drive_mux`: `neutral_hold_s` | 0.3 | zeros first when AUTO starts, and when the ESP32 is not driving (`rearm_interval_s` 1.5) |
 | `drive_mux`: `mode_timeout_s` | 0.5 | base station silent this long: lost |
@@ -238,6 +257,98 @@ place what the camera sees with it, and RTAB-Map corrects the `map` frame instea
 | `/odometry/filtered` | EKF → Nav2 |
 | `/map` | RTAB-Map → Nav2's global costmap, RViz |
 | `/rover/autonomy_events` | goal_manager → you |
+| `/gps/fix` | gps_node → gps_alignment, RTAB-Map (GPS mode) |
+| `/rover/gps_status`, `/rover/gps_datum`, TF `map → enu` | gps_alignment → goal_manager, you: north found yet?, the GPS origin, east-north in the map |
+| `/odometry/gps` → `/odometry/global` | gps_alignment (fixes in the map frame) → ekf_global (publishes `map → odom` in the GPS mode) |
+| `/rover/gps_command` | gps_goals (base station) → goal_manager: waypoint lists, `next`, `cancel` |
+| `/rover/gps_waypoints` | goal_manager → RViz |
+
+## GPS (Quectel L89HA)
+
+The GPS mode is for long runs outdoors (competition traverses up to about 500 m). The camera's odometry is precise
+over metres but drifts about 1-2 % of the distance; GPS is a metre or two off everywhere but never drifts. In the GPS
+mode a second EKF, `ekf_global`, combines the two and corrects the drift (`map -> odom`), and you can send goals as GPS
+coordinates. RTAB-Map then only records (its map and the GPS fixes stay in its database); Nav2 plans in a
+`gps_window_m` (100 m) square around the rover, from what the camera has seen. The RTAB-Map mode (the default) stays as
+it was, for small areas and indoors.
+
+**The receiver.** The L89HA (dual-band L1 + L5: GPS, Galileo, NavIC by default; GLONASS and BeiDou can be switched on;
+SBAS including GAGAN) is about 1.5 m off at HDOP 1 (Quectel: under 1.8 m CEP). Its board has its own CP2102 USB-serial
+bridge. From the factory it sends at 9600 baud, once a second.
+
+**Mounting.** On top, at the highest point, with nothing above it; the antennas are on the board's top face: keep it
+level, face up. At least 30 cm from the ZED and its USB 3 cable (USB 3 jams GPS), 50 cm from the MikroTik and its
+antenna, away from the laptop and the motor drivers; a metal plate of about 10 x 10 cm under it helps. Measure where it
+sits from the rover's centre point on the ground and enter `gps_x_m`, `gps_y_m`, `gps_z_m`.
+
+**A name for its port (once).** The GPS board and the drive ESP32 both came with the CP2102 serial number `0001`, so
+the drive's udev rule cannot tell them apart: with both plugged in, `/dev/rover-drive` can land on the GPS (the rover
+then just doesn't drive). Give the GPS board's CP2102 a serial number of its own, with only the GPS board plugged in:
+
+```bash
+sudo apt install git python3-usb
+git clone https://github.com/VCTLabs/cp210x-program.git ~/cp210x-program && cd ~/cp210x-program
+lsusb | grep -c 10c4:ea60                      # must be 1: unplug the drive ESP32 (and any other CP2102) first
+sudo PYTHONPATH=. python3 scripts/cp210x-program.py --read-cp210x -f ~/gps-cp2102-backup.hex   # a backup first
+sudo PYTHONPATH=. python3 scripts/cp210x-program.py --write-cp210x --set-serial-number=ROVERGPS --reset-device
+```
+
+Unplug and replug the GPS board; `udevadm info -q property -n /dev/ttyUSB0 | grep ID_SERIAL=` must end in `ROVERGPS`.
+Then install the rule and plug the ESP32 back in:
+
+```bash
+sudo cp ~/rover_pilot_remastered/udev/99-rover-gps.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+ls -l /dev/rover-gps /dev/rover-drive          # two different ttyUSB devices
+```
+
+The tool only changes the serial number; the backup restores the chip
+(`--write-cp210x -F ~/gps-cp2102-backup.hex`) if anything goes wrong. Only the GPS board is reprogrammed; the drive
+ESP32's rule and chip stay as they are.
+
+**Check it** under open sky, with the rover's launch stopped (it holds the port):
+
+```bash
+python3 tools/gps_check.py --seconds 300       # once a second: satellites per system, HDOP, position
+```
+
+At the end it prints how far 5 minutes of fixes wandered while standing: that is about how close the rover can get to
+a GPS waypoint at that spot. `--send 'PAIR410,1'` sends a command and prints the receiver's answer (the `$` and the
+checksum are added). Commands that work can go into `gps_setup` in `autonomy.yaml`, separated by `;`, to be sent at
+every start. Check each with `--send` first: the L89HA's command set (Airoha `$PAIR`) is not tried on this rover yet.
+
+**A GPS run.**
+
+1. Rover: `ros2 launch rover_autonomy rover_autonomy.launch.py localization:=gps`. The launch says GPS mode;
+   `ros2 topic echo /rover/gps_status` says what the GPS is waiting for.
+2. Drive about 15 m, by hand or to an RViz goal, straight or in curves. A single antenna cannot tell which way the
+   rover faces while it stands; the rover works out north from its own track against the GPS's. `/rover/gps_status`
+   then says `GPS ready: heading known to about N degrees`, and RViz shows east (red) and north (green). It refines
+   that every 10 m up to 100 m, then keeps it.
+3. Triangle (AUTO), then at the base station:
+
+   ```bash
+   ros2 run rover_autonomy gps_goals "28.750123, 77.117456" "28°45'02.10\"N 77°07'05.30\"E"   # in turn
+   ros2 run rover_autonomy gps_goals --file waypoints.txt --mode pause --pause 15                # 15 s at each
+   ros2 run rover_autonomy gps_goals --file waypoints.txt --mode wait                            # until 'next'
+   ros2 run rover_autonomy gps_goals next
+   ros2 run rover_autonomy gps_goals cancel
+   ```
+
+   Positions in any usual form: decimal degrees (`28.750123, 77.117456`, or with N/S/E/W), degrees minutes seconds
+   (`28°45'00.44"N 77°07'02.84"E`, `28 45 00.44 N, 77 7 2.84 E`), degrees decimal minutes (`28°45.0074'N
+   77°07.0474'E`); latitude first. A file has one position per line, `#` starts a comment. Each is checked and
+   printed (with its distance from the rover) before anything is sent; anything ambiguous is refused with why. Then the
+   command prints what the rover does, with a beep at each waypoint, until the list is done (Ctrl-C stops only the
+   command).
+
+The modes: `continue` drives the whole list and stops at the last; `pause` stops `--pause` seconds at each, then goes on
+by itself; `wait` stops at each until `gps_goals next`. A waypoint further than `leg_m` (40 m) is driven in legs, each
+sent before the rover reaches the last, so it doesn't stop on the way. A waypoint is reached when the rover is within
+0.3 m of where the GPS places it, so within the GPS's own error of the real spot. The same rules as for RViz goals
+apply: only in AUTO, Circle or a stick ends the list. If the base station falls silent, the rover finishes the
+waypoint it is driving to (all its legs) and stops there; the list does not go on without the base station. If the
+GPS drops out, the rover goes on with the camera's odometry, and `/rover/gps_status` says for how long.
 
 ## Rehearsal without hardware
 
@@ -266,7 +377,15 @@ Both domains are its own (61, 62), and it refuses to start next to another node 
 - nothing but the base station publishes `/cmd_vel`, and `drive_node` takes its e-stop from the mux.
 
 No camera or RTAB-Map runs in it (`zed:=false slam:=false`). It needs `rtabmap_util` (part of
-`ros-humble-rtabmap-ros`) for the obstacle detector.
+`ros-humble-rtabmap-ros`) for the obstacle detector. It also checks arcs: a goal off to the side is reached without
+turning on the spot on the way, then the rover turns to the arrow.
+
+`python3 tools/rehearsal_gps.py` (about 12 minutes, domains 65 and 66) does the same in the GPS mode, with a simulated
+L89HA on a pseudo-terminal: the simulated world faces 30° north of east, the GPS wanders by up to about 1.5 m, and the
+camera's odometry overstates every distance by 4 %. It checks that GPS waypoints are refused until the rover has found
+north by driving, that it finds it to within 5°, that the GPS keeps the position right although the odometry drifts,
+the three waypoint modes, a far waypoint in legs typed in degrees-minutes-seconds, a GPS outage on the way, and the
+e-stop stopping a list.
 
 ## When a run goes wrong
 
@@ -345,3 +464,10 @@ in.
   seen at all. In the costmaps, obstacles lower than `min_obstacle_height_m` are left out; that height is taken
   from where the rover stands, so on a tilted rover it is off by a few cm per metre of distance.
 - The mount check assumes flat ground at the start. On a slope, or facing a wall, its warning means nothing.
+- Arcs: Pure Pursuit follows the planned path closely and avoids obstacles by stopping and re-planning (Nav2 plans
+  once a second), where DWB used to swerve on its own. If the rover often stops in front of obstacles, try
+  `auto_driving: pivot` and tell me what you saw.
+- GPS: north is found from the first 15 m or so driven; until then no GPS goal is taken. In the GPS mode the map
+  frame is the rover's start pose; RTAB-Map's map is recorded but not used to plan or to correct the position.
+  The L89HA's setup commands (`gps_setup`) are not tried on the rover yet. All of the GPS mode is tested in
+  simulation only (`tools/rehearsal_gps.py`).
