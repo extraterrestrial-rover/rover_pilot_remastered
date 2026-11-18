@@ -1,0 +1,30 @@
+{
+  // Open with: code arm_pilot_redemption.code-workspace (or File > Open Workspace from File...).
+  // PlatformIO finds a project only at the root of a workspace folder, so firmware_arm is its own folder here.
+  "folders": [
+    { "name": "arm firmware (PlatformIO)", "path": "firmware_arm" },
+    { "name": "rover_pilot_remastered (repo)", "path": "." }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.pio": true,
+      "**/__pycache__": true
+    },
+    "search.exclude": {
+      "**/.pio": true,
+      "ros2_ws/build": true,
+      "ros2_ws/install": true,
+      "ros2_ws/log": true
+    },
+    "files.associations": {
+      "*.ino": "cpp"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "platformio.platformio-ide",
+      "ms-vscode.cpptools",
+      "ms-python.python"
+    ]
+  }
+}
