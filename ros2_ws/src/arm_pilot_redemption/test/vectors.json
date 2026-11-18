@@ -1,0 +1,96 @@
+{
+  "crc_check": {
+    "input": "123456789",
+    "crc": 10673
+  },
+  "commands": [
+    {
+      "name": "neutral",
+      "seq": 0,
+      "estop": false,
+      "targets_rpm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "payload": "000000000000000000",
+      "wire": "03018301010101010101010103dc7600"
+    },
+    {
+      "name": "shoulder_full",
+      "seq": 1,
+      "estop": false,
+      "targets_rpm": [
+        117.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "payload": "009204000000000000",
+      "wire": "04018301039204010101010103cc9700"
+    },
+    {
+      "name": "wrist_roll",
+      "seq": 2,
+      "estop": false,
+      "targets_rpm": [
+        -20.5,
+        3.3,
+        60.0,
+        -60.0
+      ],
+      "payload": "0033ff21005802a8fd",
+      "wire": "040183020433ff21075802a8fddbc700"
+    },
+    {
+      "name": "estop",
+      "seq": 255,
+      "estop": true,
+      "targets_rpm": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "payload": "010000000000000000",
+      "wire": "050183ff010101010101010103fbf000"
+    }
+  ],
+  "status": {
+    "seq": 7,
+    "payload": "05001400d2040200c02709000101000004000080004902a0860100000004000001ff6efbfbffffff030005010800000000807be1ff00000000010000000000000000ffff",
+    "wire": "0501050705021404d2040204c02709030101010204010280064902a0860101010204010a01ff6efbfbffffff030405010801010105807be1ff01010102010101010101010105ffff6d5900"
+  },
+  "info": {
+    "seq": 8,
+    "payload": "9204ae2c0200010000019204ae2c020001000001300c0ad200000100000300000000000000000000",
+    "wire": "090106089204ae2c0202010107019204ae2c020201010601300c0ad201020101020301010101010101010103cab300"
+  },
+  "slave_commands": [
+    {
+      "name": "neutral",
+      "seq": 0,
+      "estop": false,
+      "target_rpm": 0.0,
+      "frame": "011000000000ea4f"
+    },
+    {
+      "name": "reverse",
+      "seq": 77,
+      "estop": false,
+      "target_rpm": -58.5,
+      "frame": "01104d00b7fdd8a1"
+    },
+    {
+      "name": "estop",
+      "seq": 255,
+      "estop": true,
+      "target_rpm": 0.0,
+      "frame": "0110ff0100007933"
+    }
+  ],
+  "slave_status": {
+    "frame": "01112a04000280ffb7fdc01dfeff07000f009204ae2c0200010000018aa6"
+  }
+}

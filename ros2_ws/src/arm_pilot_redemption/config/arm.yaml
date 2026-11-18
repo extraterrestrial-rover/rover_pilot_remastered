@@ -1,0 +1,61 @@
+# Shared by arm_teleop (base station) and arm_driver (arm computer). Both machines must use the same values.
+# Use decimal points for every number: ROS 2 parameters are typed.
+# PLACEHOLDER values are not decided yet: see ARM_OPEN_QUESTIONS.md at the repository root.
+/**:
+  ros__parameters:
+    # Gearmotor output rpm at full PWM, per motor (shoulder, elbow, wrist_a, wrist_b).
+    # MUST equal max_rpm in firmware_arm/include/config.h (kJoints); the driver warns if not.
+    motor_max_rpm: [117.0, 117.0, 117.0, 117.0]   # PLACEHOLDER: goBILDA 5203 50.9:1
+    # Gearmotor output revolutions per joint revolution: everything between the goBILDA gearbox and the joint.
+    shoulder_ratio: 1.0        # PLACEHOLDER: worm gearbox ratio (x any belt/gear after it)
+    elbow_ratio: 1.0           # PLACEHOLDER: worm gearbox ratio
+    wrist_pitch_ratio: 1.0     # PLACEHOLDER: turns of each bevel motor per wrist pitch turn (both motors the same way)
+    wrist_roll_ratio: 1.0      # PLACEHOLDER: turns of each bevel motor per wrist roll (auger) turn (motors opposite)
+    joint_cmd_topic: /arm/joint_cmd
+    estop_topic: /arm/estop
+
+arm_teleop:
+  ros__parameters:
+    # PS5 DualSense through joy's joy_node (base_station.launch.py). VERIFY every index with `ros2 topic echo /joy`
+    # (README_ARM.md): the rover's drive.yaml found different indices on its PS5 than the usual Linux layout used here.
+    # Each joint takes one axis (the D-pad shows up as two axes) and/or a pair of buttons; -1 = unused.
+    shoulder_pitch_axis: 1             # left stick up/down: up = +1 = shoulder up
+    shoulder_pitch_invert: false
+    shoulder_pitch_positive_button: -1
+    shoulder_pitch_negative_button: -1
+    elbow_pitch_axis: 4                # right stick up/down: up = +1 = elbow up
+    elbow_pitch_invert: false
+    elbow_pitch_positive_button: -1
+    elbow_pitch_negative_button: -1
+    wrist_pitch_axis: 7                # D-pad up/down: up = +1 = wrist up
+    wrist_pitch_invert: false
+    wrist_pitch_positive_button: -1
+    wrist_pitch_negative_button: -1
+    wrist_roll_axis: 6                 # D-pad left/right (left = +1), inverted: right = auger turns its drilling way
+    wrist_roll_invert: true
+    wrist_roll_positive_button: -1
+    wrist_roll_negative_button: -1
+    # rad/s at full input; <= 0 = the joint's top speed (its motors at full PWM) from the gearing above.
+    shoulder_pitch_max_velocity: -1.0
+    elbow_pitch_max_velocity: -1.0
+    wrist_pitch_max_velocity: -1.0
+    wrist_roll_max_velocity: -1.0
+    deadzone: 0.08
+    slow_button: 4             # L1 held = slow mode (-1 disables)
+    slow_scale: 0.35
+    estop_button: 1            # Circle: latch the e-stop
+    release_button: 9          # Options: release the e-stop (sticks and D-pad centred)
+    joy_timeout_s: 0.5         # joystick silent this long = e-stop
+    publish_rate_hz: 20.0
+    estop_rate_hz: 10.0
+
+arm_driver:
+  ros__parameters:
+    # port: set with the launch argument port:= (default /dev/arm-master, the udev symlink).
+    # A value here would override the launch argument, because node-specific entries take precedence.
+    baud: 115200               # MUST equal SERIAL_BAUD in firmware_arm/include/config.h
+    rate_hz: 50.0
+    cmd_timeout_s: 0.3         # /arm/joint_cmd older than this -> zero targets
+    estop_timeout_s: 0.5       # e-stop heartbeat older than this -> e-stop
+    require_estop_heartbeat: true
+    joint_states_topic: /arm/joint_states

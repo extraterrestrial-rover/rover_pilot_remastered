@@ -1,0 +1,14 @@
+# Stable name for the arm master ESP32 (ESP32 DevKit V1): /dev/arm-master
+# Install on the arm computer:
+#   sudo cp 99-arm-master.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+#
+# The drive ESP32, the arm master and the arm slaves can share one USB ID (CP2102), so pin the master by its serial:
+#   udevadm info -a -n /dev/ttyUSB0 | grep '{serial}'     # with only the arm master plugged in
+# then replace REPLACE_WITH_SERIAL below. Until then the rule matches no device.
+# ID_MM_DEVICE_IGNORE keeps ModemManager from probing the port (its AT commands and line toggling reset the ESP32).
+# The slaves need no rule: their USB port is only for flashing and the bench printout.
+
+# Silicon Labs CP210x
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="REPLACE_WITH_SERIAL", SYMLINK+="arm-master", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"
+# WCH CH340 (no unique serial: match the USB port path instead, see README_ARM.md)
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", KERNELS=="1-1.3", SYMLINK+="arm-master", MODE="0660", GROUP="dialout", ENV{ID_MM_DEVICE_IGNORE}="1"
