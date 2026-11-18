@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>arm_pilot_redemption</name>
-  <version>1.1.0</version>
+  <version>1.2.0</version>
   <description>Arm manual control: PS5 teleop with a latched software e-stop at the base station, joint velocity commands to the arm master ESP32 over a framed serial protocol, and four motor slave ESP32s on I2C.</description>
   <maintainer email="diveshkumar_23ee078@dtu.ac.in">bruce</maintainer>
   <license>Apache-2.0</license>

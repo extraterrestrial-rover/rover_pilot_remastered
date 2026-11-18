@@ -8,9 +8,9 @@ Decisions still open for the arm, with what the code does until they are made. U
 |---|---|---|---|
 | 1 | **Gear ratios**: the worm gearbox ratio of the shoulder and the elbow (and any stage after it), and the bevel gear ratios of the wrist for pitch and for roll | 1.0 everywhere, so `/arm/joint_states` is in gearmotor turns rather than joint angles. Speed limits are not affected: full stick = motors at full PWM | `config/arm.yaml`: `shoulder_ratio`, `elbow_ratio`, `wrist_pitch_ratio`, `wrist_roll_ratio` |
 | 2 | **goBILDA motor model per joint**: max rpm and encoder counts per output revolution | 5203 Yellow Jacket 50.9:1 (117 rpm, 1425.1 counts) on all four | `config.h` `kJoints` (`max_rpm`, `counts_per_rev`) **and** `arm.yaml` `motor_max_rpm` (they must match; the driver warns) |
-| 3 | **I2C**: SDA/SCL pins, bus speed, slave addresses, pull-up resistors | GPIO 21 / 22, 100 kHz, 0x10–0x13, one 2.2–4.7 kΩ pair for the bus | `config.h`: `I2C_SDA_PIN`, `I2C_SCL_PIN`, `I2C_FREQUENCY_HZ`, `kJoints[].i2c_address` |
-| 4 | **Slave pins**: motor driver DIR/PWM and encoder A/B on each slave board | DIR 25, PWM 26, encoder 32 / 33 (same on every slave) | `config.h`: `MOTOR_DIR_PIN`, `MOTOR_PWM_PIN`, `ENCODER_A_PIN`, `ENCODER_B_PIN` |
-| 5 | **Encoder supply**: 3.3 V, or 5 V with a level shifter (ESP32 inputs are not 5 V tolerant) | assumed 3.3 V (internal pull-ups on) | wiring |
+| 3 | **I2C**: bus speed, slave addresses, pull-up resistors (pins decided: SDA 21, SCL 22) | 100 kHz, 0x10–0x13, one 2.2–4.7 kΩ pair for the bus | `config.h`: `I2C_FREQUENCY_HZ`, `kJoints[].i2c_address` |
+| 4 | **Which board channel each motor uses**: 4 slaves with one motor each (on MD_0 / ENCODER_0, or some on MD_1 / ENCODER_1), or 2 slaves with two motors each? The PCB has two channels | 4 slaves, channel 0 on every one | `config.h` `kJoints[].channel` (2 motors per slave would need firmware and protocol changes) |
+| 5 | **Encoder outputs**: push-pull, or open-collector? GPIO 34 / 35 have no internal pull-up (supply decided: 3.3 V from the schematic) | assumed push-pull (no pull-up on 34 / 35; internal pull-ups on 18 / 5) | wiring: external pull-ups to 3.3 V if open-collector |
 | 6 | **Directions**: which DIR level turns each motor positive, and whether each encoder counts up | `forward_level = 1`, `encoder_reversed = false` | `config.h` `kJoints`; found with `tools/arm_joint_test.py` |
 | 7 | **PS5 indices** on the base station's controller | usual Linux `joy_node` layout: axes 1 / 4 / 7 / 6, Circle 1, Options 9, L1 4. The rover's `drive.yaml` found different indices on its PS5, so these need checking | `config/arm.yaml` `arm_teleop` section |
 | 8 | **Joint limits and homing**: limit switches, or a homing routine, or soft limits | none. Positions count from power-up; only the stall detection protects the hard stops | firmware + driver (new work) |
@@ -28,6 +28,8 @@ Decisions still open for the arm, with what the code does until they are made. U
 | Joints | Shoulder pitch and elbow pitch (one motor each, worm gearboxes, so they hold with the motors off), plus a bevel-gear differential wrist: both motors the same way = pitch, opposite ways = roll |
 | End effector | An auger now, driven by the wrist roll (the bevel gear only); a gripper later (see question 9) |
 | Motors | goBILDA gearmotors with built-in encoders; the same motor drivers as the rover (DIR + PWM) |
+| Pins | From the arm PCB schematic: I2C SDA 21 / SCL 22; channel 0 MD_0 DIR 33 / PWM 25, ENCODER_0 A 34 / B 35; channel 1 MD_1 DIR 12 / PWM 13, ENCODER_1 A 18 / B 5; encoders on 3.3 V |
+| PWM limit | 35 % max on every motor: enforced by the slaves (`PWM_LIMIT_PERCENT`), full stick = 35 % (`pwm_limit`) |
 | Control mode | Open loop, no PID: PWM in proportion to the joystick. Encoders are read and their count and speed reported to the laptop, but not used (`SPEED_CONTROL 0`, `ENCODERS_WIRED 1`) |
 | Electronics | 1 master ESP32 (USB to the PC) + 4 slave ESP32s, one per motor, on I2C; ESP32 DevKit V1 |
 | Bus length | Short, so 100 kHz with CRC-checked frames |

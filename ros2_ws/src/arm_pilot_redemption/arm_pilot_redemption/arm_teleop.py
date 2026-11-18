@@ -16,7 +16,7 @@ from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import Joy, JointState
 from std_msgs.msg import Bool
 
-from arm_pilot_redemption.geometry_params import declare_geometry
+from arm_pilot_redemption.geometry_params import declare_geometry, declare_limited_geometry
 from arm_pilot_redemption.kinematics import JOINTS
 from arm_pilot_redemption.teleop_logic import JointInput, TeleopConfig, TeleopLogic
 
@@ -28,7 +28,7 @@ class ArmTeleop(Node):
         super().__init__('arm_teleop')
         param = self.declare_parameter
         defaults = TeleopConfig()
-        geometry = declare_geometry(self)
+        geometry, pwm_limit = declare_limited_geometry(self, declare_geometry(self))  # full stick = the PWM limit
         inputs, max_velocity = [], []
         for joint, default, auto in zip(JOINTS, defaults.inputs, geometry.max_joint_velocity):
             inputs.append(JointInput(param(f'{joint}_axis', default.axis).value, param(f'{joint}_invert', default.invert).value,
@@ -53,7 +53,7 @@ class ArmTeleop(Node):
         self.create_timer(1.0 / param('publish_rate_hz', 20.0).value, self.publish_joint_cmd)
         self.create_timer(1.0 / param('estop_rate_hz', 10.0).value, self.publish_estop)
         speeds = ', '.join(f'{joint} {limit:.2f}' for joint, limit in zip(JOINTS, config.max_velocity))
-        self.get_logger().info(f'arm teleop: full input = {speeds} rad/s; e-stop button {config.estop_button}, release '
+        self.get_logger().info(f'arm teleop: full input = {speeds} rad/s (PWM limit {pwm_limit:.0%}); e-stop button {config.estop_button}, release '
                                f'button {config.release_button} (inputs centred). E-stop is latched until released.')
 
     def on_joy(self, msg: Joy) -> None:

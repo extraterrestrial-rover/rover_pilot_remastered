@@ -21,7 +21,7 @@ from std_msgs.msg import Bool
 
 from arm_pilot_redemption import protocol
 from arm_pilot_redemption.arm_logic import ArmGate, joint_velocities
-from arm_pilot_redemption.geometry_params import declare_geometry
+from arm_pilot_redemption.geometry_params import declare_geometry, declare_limited_geometry
 from arm_pilot_redemption.kinematics import JOINTS, joint_velocity_to_motor_rpm, motor_revolutions_to_joint_rad, motor_rpm_to_joint_rad_s
 
 LATEST_ONLY = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -66,7 +66,8 @@ class ArmDriver(Node):
         rate_hz = param('rate_hz', 50.0).value
         self.gate = ArmGate(param('cmd_timeout_s', 0.3).value, param('estop_timeout_s', 0.5).value,
                             param('require_estop_heartbeat', True).value)
-        self.geometry = declare_geometry(self)
+        self.geometry = declare_geometry(self)  # real calibration: firmware checks and joint states
+        self.command_geometry, self.pwm_limit = declare_limited_geometry(self, self.geometry)  # what commands may ask for
 
         self.create_subscription(JointState, param('joint_cmd_topic', '/arm/joint_cmd').value, self.on_joint_cmd, LATEST_ONLY)
         self.create_subscription(Bool, param('estop_topic', '/arm/estop').value, self.on_estop, LATEST_ONLY)
@@ -90,8 +91,8 @@ class ArmDriver(Node):
 
         self.create_timer(1.0 / rate_hz, self.tick)
         self.create_timer(1.0, self.publish_diagnostics)
-        limits = ', '.join(f'{joint} {limit:.2f}' for joint, limit in zip(JOINTS, self.geometry.max_joint_velocity))
-        self.get_logger().info(f'arm driver: port {self.port} @ {self.baud}; joint top speeds {limits} rad/s '
+        limits = ', '.join(f'{joint} {limit:.2f}' for joint, limit in zip(JOINTS, self.command_geometry.max_joint_velocity))
+        self.get_logger().info(f'arm driver: port {self.port} @ {self.baud}; joint top speeds {limits} rad/s at the {self.pwm_limit:.0%} PWM limit '
                                f'(motors {", ".join(str(rpm) for rpm in self.geometry.motor_max_rpm)} rpm at full PWM)')
 
     def on_joint_cmd(self, msg: JointState) -> None:
@@ -114,7 +115,7 @@ class ArmDriver(Node):
             else:
                 self.get_logger().info('arm enabled')
             self.last_reason = decision.reason
-        targets = joint_velocity_to_motor_rpm(decision.velocities, self.geometry)
+        targets = joint_velocity_to_motor_rpm(decision.velocities, self.command_geometry)  # never above pwm_limit
         self.send(protocol.arm_command_payload(decision.estop, targets))
         self.receive()
 

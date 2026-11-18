@@ -12,7 +12,7 @@ so  pitch = (wrist_a + wrist_b) / (2 * wrist_pitch_ratio),  roll = (wrist_a - wr
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 JOINTS = ('shoulder_pitch', 'elbow_pitch', 'wrist_pitch', 'wrist_roll')
 RPM_PER_RAD_S = 60.0 / (2.0 * math.pi)
@@ -44,6 +44,14 @@ class ArmGeometry:
         wrist = min(wrist_a, wrist_b)
         return (shoulder / self.shoulder_ratio / RPM_PER_RAD_S, elbow / self.elbow_ratio / RPM_PER_RAD_S,
                 wrist / self.wrist_pitch_ratio / RPM_PER_RAD_S, wrist / self.wrist_roll_ratio / RPM_PER_RAD_S)
+
+
+def with_pwm_limit(geometry: ArmGeometry, pwm_limit: float) -> ArmGeometry:
+    """The same arm with every motor capped at `pwm_limit` (0..1] of full PWM: commands computed with it never ask for
+    more, and its max_joint_velocity is the joints' speed at that cap (= full stick)."""
+    if not math.isfinite(pwm_limit) or not 0.0 < pwm_limit <= 1.0:
+        raise ValueError(f'pwm_limit must be in (0, 1], got {pwm_limit}')
+    return replace(geometry, motor_max_rpm=tuple(rpm * pwm_limit for rpm in geometry.motor_max_rpm))
 
 
 def joint_velocity_to_motor_rpm(velocities: tuple[float, ...] | list[float], geometry: ArmGeometry) -> tuple[float, float, float, float]:

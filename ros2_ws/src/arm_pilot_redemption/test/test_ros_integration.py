@@ -76,11 +76,11 @@ def test_joystick_to_motors_through_ros():
         joystick.hold(fake, timeout=0.2, pressed=(OPTIONS,))  # release with every input centred
         assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, STOPPED), timeout=2.0) is not None, fake.read()
 
-        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (255, 0, 0, 0)), timeout=2.0, left_y=1.0) is not None, fake.read()
-        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, -255, 0, 0)), timeout=2.0, right_y=-1.0) is not None, fake.read()
+        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (89, 0, 0, 0)), timeout=2.0, left_y=1.0) is not None, fake.read()
+        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, -89, 0, 0)), timeout=2.0, right_y=-1.0) is not None, fake.read()
         # D-pad up: wrist pitch, both bevel motors forward. D-pad right: auger roll, opposite ways.
-        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 255, 255)), timeout=2.0, dpad_y=1.0) is not None, fake.read()
-        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 255, -255)), timeout=2.0, dpad_x=-1.0) is not None, fake.read()
+        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 89, 89)), timeout=2.0, dpad_y=1.0) is not None, fake.read()
+        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 89, -89)), timeout=2.0, dpad_x=-1.0) is not None, fake.read()
 
         latency = joystick.hold(fake, lambda s: s == (protocol.ESTOP, STOPPED), timeout=2.0, left_y=1.0, pressed=(CIRCLE,))
         assert latency is not None and latency < 0.6, (latency, fake.read())
@@ -96,7 +96,7 @@ def test_joystick_to_motors_through_ros():
         # The base station goes silent: joystick lost / heartbeat stale -> e-stop.
         joystick.hold(fake, timeout=0.3)
         joystick.hold(fake, timeout=0.2, pressed=(OPTIONS,))
-        assert joystick.hold(fake, lambda s: s[0] == protocol.ENABLED and s[1][0] > 100, timeout=2.0, left_y=0.5) is not None
+        assert joystick.hold(fake, lambda s: s[0] == protocol.ENABLED and s[1][0] > 30, timeout=2.0, left_y=0.5) is not None
         started = time.monotonic()
         while fake.read() != (protocol.ESTOP, STOPPED) and time.monotonic() - started < 3.0:
             time.sleep(0.02)
@@ -118,7 +118,7 @@ def test_a_lost_slave_stops_the_arm_and_the_operator_recovers_with_estop_and_rel
     try:
         assert joystick.hold(fake, lambda s: s[0] == protocol.ESTOP, timeout=15.0) is not None
         joystick.hold(fake, timeout=0.2, pressed=(OPTIONS,))
-        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 255, 255)), timeout=2.0, dpad_y=1.0) is not None
+        assert joystick.hold(fake, lambda s: s == (protocol.ENABLED, (0, 0, 89, 89)), timeout=2.0, dpad_y=1.0) is not None
         fake.slaves[2].online = False  # wrist_a's slave drops off the bus mid-move
         latency = joystick.hold(fake, lambda s: s == (protocol.FAULT, STOPPED), timeout=2.0, dpad_y=1.0)
         assert latency is not None and latency < 0.3, (latency, fake.read())
@@ -149,7 +149,7 @@ def test_stopping_the_base_station_latches_the_estop_at_once():
     try:
         assert joystick.hold(fake, lambda s: s[0] == protocol.ESTOP, timeout=15.0) is not None
         joystick.hold(fake, timeout=0.2, pressed=(OPTIONS,))
-        assert joystick.hold(fake, lambda s: s[0] == protocol.ENABLED and s[1][0] > 100, timeout=3.0, left_y=0.5) is not None
+        assert joystick.hold(fake, lambda s: s[0] == protocol.ENABLED and s[1][0] > 30, timeout=3.0, left_y=0.5) is not None
         teleop.send_signal(signal.SIGINT)
         started = time.monotonic()
         while fake.read() != (protocol.ESTOP, STOPPED) and time.monotonic() - started < 2.0:  # the motors, not just the master

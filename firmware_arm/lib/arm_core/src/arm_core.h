@@ -200,6 +200,7 @@ struct JointConfig {
   float reverse_pwm_fraction;   // wrong direction: |PWM| at least this fraction of full ...
   float reverse_rpm_fraction;   // ... while the motor turns the other way faster than this fraction of max_rpm ...
   uint32_t reverse_ms;          // ... for longer than this (0 disables the check)
+  float max_pwm_fraction;       // hard cap on |PWM| as a fraction of full (0..1]: the output never exceeds it
 };
 
 // One joint motor: the same neutral interlock, timeout and e-stop latch as the master, a setpoint ramp, speed from

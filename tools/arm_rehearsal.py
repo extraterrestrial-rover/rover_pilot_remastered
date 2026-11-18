@@ -266,17 +266,17 @@ class Rehearsal:
         self.check('Options with every input centred: arm enabled', self.release())
 
         print('\n3. Joystick', flush=True)
-        for label, inputs, expected in (('left stick up: shoulder up at full PWM', {'left_y': 1.0}, (255, 0, 0, 0)),
-                                        ('right stick down: elbow down at full PWM', {'right_y': -1.0}, (0, -255, 0, 0)),
-                                        ('D-pad up: wrist pitch (both bevel motors forward)', {'dpad_y': 1.0}, (0, 0, 255, 255)),
-                                        ('D-pad right: auger roll (bevel motors opposite)', {'dpad_x': -1.0}, (0, 0, 255, -255))):
+        for label, inputs, expected in (('left stick up: shoulder up at the 35 % PWM limit', {'left_y': 1.0}, (89, 0, 0, 0)),
+                                        ('right stick down: elbow down at the limit', {'right_y': -1.0}, (0, -89, 0, 0)),
+                                        ('D-pad up: wrist pitch (both bevel motors forward)', {'dpad_y': 1.0}, (0, 0, 89, 89)),
+                                        ('D-pad right: auger roll (bevel motors opposite)', {'dpad_x': -1.0}, (0, 0, 89, -89))):
             self.ps5.set(**inputs)
             self.check(label, self.wait(lambda s, e=expected: s == (ENABLED, e), 2.0) is not None)
         self.ps5.set(dpad_y=1.0, dpad_x=-1.0)
         self.check('D-pad up + right: pitch and roll together, scaled to fit the motors',
-                   self.wait(lambda s: s[0] == ENABLED and s[1][2] == 255 and s[1][3] == 0, 2.0) is not None)
+                   self.wait(lambda s: s[0] == ENABLED and s[1][2] == 89 and s[1][3] == 0, 2.0) is not None)
         self.ps5.set(left_y=1.0, pressed=(L1,))
-        self.check('L1 held: slow mode (35 %)', self.wait(lambda s: s[0] == ENABLED and 85 <= s[1][0] <= 93, 2.0) is not None)
+        self.check('L1 held: slow mode (35 % of the limit)', self.wait(lambda s: s[0] == ENABLED and 29 <= s[1][0] <= 33, 2.0) is not None)
         self.ps5.set()
         self.check('inputs released: motors stop, still enabled', self.wait(lambda s: s == (ENABLED, STOPPED), 1.0) is not None)
 
@@ -359,7 +359,7 @@ class Rehearsal:
 
         print('\n5. Slaves', flush=True)
         self.ps5.set(dpad_y=1.0)
-        self.wait(lambda s: s == (ENABLED, (0, 0, 255, 255)), 2.0)
+        self.wait(lambda s: s == (ENABLED, (0, 0, 89, 89)), 2.0)
         self.arm.fake.slaves[3].online = False  # wrist_b drops off the bus while the wrist moves
         latency = self.wait(lambda s: s == (FAULT, STOPPED), 2.0)
         self.check('wrist_b slave lost mid-move: every motor stops (FAULT)', latency is not None and latency < 0.3, self.timed(latency))

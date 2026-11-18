@@ -22,8 +22,9 @@ from pathlib import Path
 from arm_pilot_redemption import protocol
 from arm_pilot_redemption.protocol import BOOT, ENABLED, ESTOP, FAULT, NO_COMMAND, WAIT_NEUTRAL, WAIT_SLAVES
 
-FIRMWARE_VERSION = (1, 1, 0)  # firmware_arm/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
+FIRMWARE_VERSION = (1, 2, 0)  # firmware_arm/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
 MAX_RPM, COUNTS_PER_REV = 117.0, 1425.1  # config.h placeholder motors
+PWM_LIMIT = 0.35  # config.h PWM_LIMIT_PERCENT
 BUS_PERIOD_S, CONTROL_PERIOD_S, STATUS_PERIOD_S, INFO_PERIOD_S = 0.02, 0.01, 0.05, 1.0
 
 
@@ -165,10 +166,12 @@ class FakeSlave:
         self.counter = (self.counter + 1) & 0xFF
 
     def velocity(self) -> float:
-        return max(-self.max_rpm, min(self.max_rpm, self.target)) if self.state == ENABLED else 0.0
+        limit = self.max_rpm * PWM_LIMIT
+        return max(-limit, min(limit, self.target)) if self.state == ENABLED else 0.0
 
     def pwm(self) -> int:
-        return max(-255, min(255, round(self.target / self.max_rpm * 255))) if self.state == ENABLED else 0
+        limit = round(PWM_LIMIT * 255)  # the firmware's hard cap: 89
+        return max(-limit, min(limit, round(self.target / self.max_rpm * 255))) if self.state == ENABLED else 0
 
     def status_frame(self, now_ms: int) -> bytes:
         age = 0xFFFF if self.last_command_ms is None else min(0xFFFF, now_ms - self.last_command_ms)

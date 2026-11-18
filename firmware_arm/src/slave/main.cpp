@@ -24,11 +24,14 @@
 #error "Build a slave with its environment (pio run -e slave_shoulder ...): SLAVE_JOINT selects the joint"
 #endif
 static_assert(SLAVE_JOINT >= 0 && SLAVE_JOINT < arm::kMotors, "SLAVE_JOINT must be 0..3");
-static_assert(ENCODER_A_PIN < 40 && ENCODER_B_PIN < 40, "encoder pins must be ESP32 GPIOs");
 
 namespace {
 
-const JointHardware& kJoint = kJoints[SLAVE_JOINT];
+constexpr const JointHardware& kJoint = kJoints[SLAVE_JOINT];
+static_assert(kJoint.channel < 2, "kJoints[].channel must be 0 or 1");
+constexpr ChannelPins kPins = kChannels[kJoint.channel];
+constexpr ChannelPins kOtherPins = kChannels[1 - kJoint.channel];  // unused channel: its driver is held off
+static_assert(kPins.encoder_a_pin < 40 && kPins.encoder_b_pin < 40, "encoder pins must be ESP32 GPIOs");
 const arm::JointConfig kConfig = {
     kJoint.max_rpm,
     kJoint.counts_per_rev,
@@ -45,6 +48,7 @@ const arm::JointConfig kConfig = {
     REVERSE_PWM_FRACTION,
     REVERSE_RPM_FRACTION,
     ENCODER_FAULT_CHECKS ? REVERSE_MS : 0u,
+    PWM_LIMIT_PERCENT / 100.0f,
 };
 const char* const kStateNames[] = {"BOOT", "NO_COMMAND", "ESTOP", "WAIT_NEUTRAL", "ENABLED", "FAULT", "WAIT_SLAVES"};
 
@@ -68,7 +72,7 @@ inline uint32_t IRAM_ATTR read_pin(uint8_t pin) {
 void IRAM_ATTR on_encoder_edge() {
   // Index: previous AB state * 4 + new AB state. 00 -> 01 -> 11 -> 10 counts up; impossible jumps count 0.
   static const int8_t kStep[16] = {0, 1, -1, 0, -1, 0, 0, 1, 1, 0, 0, -1, 0, -1, 1, 0};
-  const uint8_t state = static_cast<uint8_t>((read_pin(ENCODER_A_PIN) << 1) | read_pin(ENCODER_B_PIN));
+  const uint8_t state = static_cast<uint8_t>((read_pin(kPins.encoder_a_pin) << 1) | read_pin(kPins.encoder_b_pin));
   encoder_count = encoder_count + kStep[(encoder_state << 2) | state];
   encoder_state = state;
 }
@@ -145,8 +149,8 @@ void publish_status(uint32_t now_ms) {
 
 void drive_motor(int16_t pwm) {
   const bool forward = pwm >= 0;
-  digitalWrite(MOTOR_DIR_PIN, forward ? kJoint.forward_level : !kJoint.forward_level);
-  analogWrite(MOTOR_PWM_PIN, forward ? pwm : -pwm);
+  digitalWrite(kPins.dir_pin, forward ? kJoint.forward_level : !kJoint.forward_level);
+  analogWrite(kPins.pwm_pin, forward ? pwm : -pwm);
 }
 
 void update_led(uint32_t now_ms) {
@@ -173,15 +177,20 @@ void print_status() {
 }  // namespace
 
 void setup() {
-  pinMode(MOTOR_DIR_PIN, OUTPUT);
-  pinMode(MOTOR_PWM_PIN, OUTPUT);
+  pinMode(kPins.dir_pin, OUTPUT);
+  pinMode(kPins.pwm_pin, OUTPUT);
   drive_motor(0);
+  pinMode(kOtherPins.dir_pin, OUTPUT);  // the board's other driver channel, if anything is connected: off
+  pinMode(kOtherPins.pwm_pin, OUTPUT);
+  digitalWrite(kOtherPins.dir_pin, LOW);
+  digitalWrite(kOtherPins.pwm_pin, LOW);
   pinMode(STATUS_LED_PIN, OUTPUT);
-  pinMode(ENCODER_A_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_B_PIN, INPUT_PULLUP);
-  encoder_state = static_cast<uint8_t>((read_pin(ENCODER_A_PIN) << 1) | read_pin(ENCODER_B_PIN));
-  attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), on_encoder_edge, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), on_encoder_edge, CHANGE);
+  // GPIO 34-39 have no internal pull-up (external ones are needed for open-collector encoders).
+  pinMode(kPins.encoder_a_pin, kPins.encoder_a_pin >= 34 ? INPUT : INPUT_PULLUP);
+  pinMode(kPins.encoder_b_pin, kPins.encoder_b_pin >= 34 ? INPUT : INPUT_PULLUP);
+  encoder_state = static_cast<uint8_t>((read_pin(kPins.encoder_a_pin) << 1) | read_pin(kPins.encoder_b_pin));
+  attachInterrupt(digitalPinToInterrupt(kPins.encoder_a_pin), on_encoder_edge, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(kPins.encoder_b_pin), on_encoder_edge, CHANGE);
   reset_reason = static_cast<uint8_t>(esp_reset_reason());
   Serial.begin(115200);
 

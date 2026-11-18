@@ -7,10 +7,10 @@ import serial
 
 from arm_pilot_redemption import fake_arm, protocol
 from arm_pilot_redemption.arm_logic import ArmGate
-from arm_pilot_redemption.kinematics import ArmGeometry, joint_velocity_to_motor_rpm
+from arm_pilot_redemption.kinematics import ArmGeometry, joint_velocity_to_motor_rpm, with_pwm_limit
 
 pytestmark = pytest.mark.skipif(not hasattr(os, 'openpty'), reason='needs POSIX pseudo-terminals')
-ARM = ArmGeometry((117.0,) * 4, 1.0, 1.0, 1.0, 1.0)
+ARM = with_pwm_limit(ArmGeometry((117.0,) * 4, 1.0, 1.0, 1.0, 1.0), 0.35)  # full stick = PWM 89
 TOP = ARM.max_joint_velocity
 
 
@@ -68,13 +68,13 @@ def test_full_link_with_slaves_faults_and_timeouts():
         link.run(gate, 0.2, operator(gate, (0.0,) * 4))
         status = link.run(gate, 0.3, operator(gate, (TOP[0] / 2, 0.0, 0.0, 0.0)))
         assert status.state_name == 'ENABLED' and status.slaves_ready
-        assert 126 <= status.motors[0].pwm <= 129 and pwm(status)[1:] == (0, 0, 0)
-        assert status.motors[0].velocity_rpm == pytest.approx(58.5, abs=0.1) and status.motors[0].position > 0
+        assert 44 <= status.motors[0].pwm <= 46 and pwm(status)[1:] == (0, 0, 0)
+        assert status.motors[0].velocity_rpm == pytest.approx(20.5, abs=0.1) and status.motors[0].position > 0
         assert all(motor.known and motor.counts_per_rev == 1425.1 for motor in link.info)
 
         # Wrist roll alone: the bevel motors turn opposite ways.
         status = link.run(gate, 0.3, operator(gate, (0.0, 0.0, 0.0, TOP[3])))
-        assert pwm(status) == (0, 0, 255, -255)
+        assert pwm(status) == (0, 0, 89, -89)
 
         # wrist_b's slave drops off the bus: every motor stops, FAULT names it.
         fake.slaves[3].online = False
@@ -121,7 +121,7 @@ def test_slaves_stop_on_their_own_when_the_master_hangs():
     try:
         link.run(gate, 0.3, operator(gate, (0.0,) * 4))
         link.run(gate, 0.3, operator(gate, (TOP[0], 0.0, 0.0, 0.0)))
-        assert fake.read()[1][0] == 255
+        assert fake.read()[1][0] == 89
         with fake.lock:  # the master's loop stops exchanging frames
             fake.bus_cycle = lambda now_ms: None
         time.sleep(0.2)

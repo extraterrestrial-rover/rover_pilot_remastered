@@ -17,7 +17,7 @@ using arm::State;
 static const arm::MasterConfig kMasterConfig = {300, 100, 200};
 // Open loop, no ramp, no encoder checks unless a test turns them on.
 static const arm::JointConfig kOpenLoop = {117.0f, 1425.1f, 100, 0.0f, true, false, 0.5f, 2.0f, 0.3f,
-                                           0.7f, 0.05f, 0, 0.3f, 0.2f, 0};
+                                           0.7f, 0.05f, 0, 0.3f, 0.2f, 0, 1.0f};
 
 static ArmCommand command(bool estop, int16_t a, int16_t b, int16_t c, int16_t d) {
   ArmCommand result = {estop, {a, b, c, d}};
@@ -397,6 +397,19 @@ void test_joint_requires_neutral_and_latches_estop() {
   TEST_ASSERT_EQUAL(State::WaitNeutral, joint.state());
 }
 
+void test_pwm_limit_caps_the_output() {
+  arm::JointConfig config = kOpenLoop;
+  config.max_pwm_fraction = 0.35f;
+  JointController joint(config);
+  joint.on_command(false, 0, 0);
+  joint.on_command(false, -1170, 10);  // full reverse
+  joint.update(10, 0);
+  TEST_ASSERT_EQUAL(-89, joint.pwm());
+  joint.on_command(false, 200, 20);  // 20 rpm: under the cap, unchanged
+  joint.update(20, 0);
+  TEST_ASSERT_EQUAL(44, joint.pwm());
+}
+
 void test_joint_stops_when_the_master_goes_quiet() {
   JointController joint(kOpenLoop);
   joint.on_command(false, 0, 0);
@@ -544,6 +557,7 @@ int main(int, char**) {
   RUN_TEST(test_master_command_timeout_requires_neutral_again);
   RUN_TEST(test_master_estop_does_not_time_out_into_motion);
   RUN_TEST(test_joint_requires_neutral_and_latches_estop);
+  RUN_TEST(test_pwm_limit_caps_the_output);
   RUN_TEST(test_joint_stops_when_the_master_goes_quiet);
   RUN_TEST(test_joint_ramps_the_setpoint_but_stops_at_once);
   RUN_TEST(test_joint_measures_speed_and_position_from_the_encoder);

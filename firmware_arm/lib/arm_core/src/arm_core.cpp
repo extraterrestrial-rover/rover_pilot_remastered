@@ -433,17 +433,19 @@ void JointController::update(uint32_t now_ms, int32_t encoder_count) {
     return;
   }
 
+  // The PWM cap; anything outside (0, 1] (a config mistake) falls back to full scale rather than no output.
+  const float limit = (config_.max_pwm_fraction > 0.0f && config_.max_pwm_fraction < 1.0f) ? config_.max_pwm_fraction : 1.0f;
   float output = setpoint_rpm_ / config_.max_rpm;  // feed-forward: the open-loop calibration
   if (config_.encoder_fitted && config_.closed_loop) {
     const float error = (setpoint_rpm_ - velocity_rpm_) / config_.max_rpm;
     const float unclamped = output + config_.kp * error + integral_;
     // Conditional integration: never wind further into saturation.
-    if (!((unclamped >= 1.0f && error > 0) || (unclamped <= -1.0f && error < 0))) {
+    if (!((unclamped >= limit && error > 0) || (unclamped <= -limit && error < 0))) {
       integral_ = clampf(integral_ + config_.ki * error * dt_ms / 1000.0f, config_.integral_limit);
     }
     output += config_.kp * error + integral_;
   }
-  pwm_ = static_cast<int16_t>(lroundf(clampf(output, 1.0f) * 255.0f));
+  pwm_ = static_cast<int16_t>(lroundf(clampf(output, limit) * 255.0f));
   check_faults(now_ms);
 }
 

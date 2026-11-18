@@ -35,9 +35,11 @@ New for the arm:
 | Right stick up / down | Elbow up / down (proportional) |
 | D-pad up / down | Wrist pitch up / down |
 | D-pad right / left | Wrist roll: auger drilling way / back |
-| **L1** (hold) | Slow mode: 35 % |
+| **L1** (hold) | Slow mode: 35 % of normal (about 12 % PWM) |
 | **Circle** | **E-stop**: latches immediately, every motor stops |
 | **Options** | Release the e-stop: only works with **both sticks and the D-pad centred** |
+
+**Every motor is capped at 35 % PWM** (PWM 89 of 255). Full stick gives the cap, so the whole stick travel is usable. The slave firmware enforces the cap (`PWM_LIMIT_PERCENT`), and the ROS side scales full stick to it (`pwm_limit`).
 
 The e-stop starts **latched**. After launching, centre everything and press Options. These are the default indices of the usual Linux `joy_node` layout. **Check them on your PS5** (setup step 3): the rover's `drive.yaml` found different indices on its controller.
 
@@ -64,10 +66,19 @@ The pitch joints have worm gearboxes, so they hold their position with the motor
 ## Wiring
 
 - **I2C bus:** connect SDA (GPIO 21) and SCL (GPIO 22) on all five boards, plus a **common ground**. Fit **one** pair of pull-ups (2.2–4.7 kΩ to 3.3 V) for the whole bus. Keep the bus short and twist SDA/SCL with ground through the arm. Every frame carries a CRC, so a noisy bus is detected and does not move anything wrongly, but it can cause faults.
-- **Each slave:** motor driver DIR on GPIO 25 and PWM on GPIO 26 (the same driver type as the rover). Encoder A/B go to GPIO 32/33. **Power the goBILDA encoder from 3.3 V or level-shift A/B**: ESP32 inputs are not 5 V tolerant.
-- **Master:** USB to the arm computer, plus I2C. It drives no motor.
+- **Board pins** (from the arm PCB schematic, ESP32-WROOM-32 30-pin dev board, 5 V on VIN, encoders on 3.3 V):
 
-All of these are placeholders in `firmware_arm/include/config.h` (see [ARM_OPEN_QUESTIONS.md](ARM_OPEN_QUESTIONS.md)).
+  | Channel | Motor driver | DIR | PWM | Encoder | A | B |
+  |---|---|---|---|---|---|---|
+  | 0 | MD_0 | GPIO 33 | GPIO 25 | ENCODER_0 | GPIO 34 | GPIO 35 |
+  | 1 | MD_1 | GPIO 12 | GPIO 13 | ENCODER_1 | GPIO 18 | GPIO 5 |
+
+  Each joint's `channel` in `kJoints` picks the one its motor uses (0 on every slave for now). The other channel's DIR/PWM pins are held low.
+- **GPIO 34 / 35 have no internal pull-up.** If the encoder outputs are open-collector, fit pull-ups (about 4.7–10 kΩ) from 34 and 35 to 3.3 V.
+- **GPIO 12 (MD_1 DIR) is a strapping pin.** If the driver pulls it high at power-up, the ESP32 won't boot. This only matters on boards that use channel 1.
+- **Master:** USB to the arm computer, plus I2C. It drives no motor and holds both driver channels low.
+
+Pins are in `firmware_arm/include/config.h` (`kChannels`); addresses and bus speed are still placeholders (see [ARM_OPEN_QUESTIONS.md](ARM_OPEN_QUESTIONS.md)).
 
 ## Layout
 
@@ -106,7 +117,7 @@ pio run -e slave_wrist_b -t upload
 
 **Label each slave board** with its joint. If a board ends up in the wrong place, the master refuses to enable and names it.
 
-A slave's USB port prints one line twice a second, for example `shoulder 0x10 fw 1.1.0  ENABLED  pwm  51  23.4 rpm  pos  1234  bad 0`. Open it with `pio device monitor -e slave_shoulder` to check that board on the bench. The master's serial line is binary: use `tools/arm_joint_test.py` or the driver's logs instead.
+A slave's USB port prints one line twice a second, for example `shoulder 0x10 fw 1.2.0  ENABLED  pwm  51  23.4 rpm  pos  1234  bad 0`. Open it with `pio device monitor -e slave_shoulder` to check that board on the bench. The master's serial line is binary: use `tools/arm_joint_test.py` or the driver's logs instead.
 
 ### 2. Arm computer (Ubuntu 22.04 + ROS 2 Humble)
 
@@ -161,7 +172,7 @@ The arm log shows every state change and every slave problem by name, for exampl
    ```bash
    python3 ~/rover_pilot_remastered/tools/arm_joint_test.py /dev/arm-master
    ```
-   It waits until the master and all four slaves are ready, then turns each motor positive and back at 20 % for 1 s. It then pitches the wrist up and back, and rolls it positive and back. Every line shows the firmware version (it must say **fw 1.1.0**) and the PWM, rpm and encoder count of each motor. Check each step:
+   It waits until the master and all four slaves are ready, then turns each motor positive and back at 20 % for 1 s. It then pitches the wrist up and back, and rolls it positive and back. Every line shows the firmware version (it must say **fw 1.2.0**) and the PWM, rpm and encoder count of each motor. Check each step:
    - **The named motor moves.** If another motor moves, that board got the wrong environment, or its address is wrong.
    - **Positive is the positive direction.** Shoulder and elbow should go up. Wrist pitch should go up. Wrist roll should turn the auger its drilling way. If one is reversed, flip that joint's `forward_level` in `config.h`.
    - **The count rises while the PWM is positive.** If it falls, set `encoder_reversed`. With the encoder reversed and `ENCODER_FAULT_CHECKS 1`, the slave stops itself after 0.3 s with "turning against its PWM".
@@ -187,7 +198,8 @@ The arm log shows every state change and every slave problem by name, for exampl
 | `motor_max_rpm` | 117.0 ×4 | Gearmotor output rpm at full PWM. **Must equal `max_rpm` in `kJoints`**; the driver warns if not |
 | `shoulder_ratio`, `elbow_ratio` | 1.0 | Gearmotor output turns per joint turn (the worm gearbox and anything after it) |
 | `wrist_pitch_ratio`, `wrist_roll_ratio` | 1.0 | Turns of each bevel motor per wrist pitch turn / per roll turn |
-| `<joint>_max_velocity` | auto | rad/s at full input; auto = the joint's motors at full PWM |
+| `pwm_limit` | 0.35 | Full stick as a fraction of full PWM. Keep it at or below `PWM_LIMIT_PERCENT` (35) in `config.h`, which the slaves enforce |
+| `<joint>_max_velocity` | auto | rad/s at full input; auto = the joint's motors at `pwm_limit` |
 | `<joint>_axis` / `_invert` / `_positive_button` / `_negative_button` | see yaml | Joystick mapping |
 | `deadzone`, `slow_scale` | 0.08, 0.35 | Stick deadzone; slow-mode factor |
 | `cmd_timeout_s` / `estop_timeout_s` | 0.3 / 0.5 | Arm side: stale joint command → zero; stale heartbeat → e-stop |
@@ -196,7 +208,7 @@ The arm log shows every state change and every slave problem by name, for exampl
 | `SPEED_CONTROL`, `ENCODERS_WIRED`, `ENCODER_FAULT_CHECKS` | 0, 1, 0 | Control mode: open loop, encoders read and reported, no action on them |
 | `STALL_*`, `REVERSE_*` | 70 % / 5 % / 1 s, 30 % / 20 % / 0.3 s | Stall and wrong-direction detection (when `ENCODER_FAULT_CHECKS 1`) |
 
-The gear ratios only change the units of `/arm/joint_cmd` and `/arm/joint_states`. Full stick always means the motors at full PWM, unless `<joint>_max_velocity` is set. In open loop, `max_rpm` only scales the command to PWM: full stick is PWM 255 whatever the motor really does, as long as `max_rpm` matches `motor_max_rpm`. The switches at the top of `config.h` set the mode for every joint; the last two fields of each `kJoints` entry (`encoder_fitted`, `closed_loop`) can override it per joint. With `ENCODERS_WIRED 0`, slaves report 0 counts per rev and the driver stops publishing `/arm/joint_states`.
+The gear ratios only change the units of `/arm/joint_cmd` and `/arm/joint_states`. Full stick always means the motors at `pwm_limit` (35 % = PWM 89), unless `<joint>_max_velocity` is set. In open loop, `max_rpm` only scales the command to PWM, as long as it matches `motor_max_rpm`. To raise the limit, change both `PWM_LIMIT_PERCENT` (reflash the slaves) and `pwm_limit`. The switches at the top of `config.h` set the mode for every joint; the last two fields of each `kJoints` entry (`encoder_fitted`, `closed_loop`) can override it per joint. With `ENCODERS_WIRED 0`, slaves report 0 counts per rev and the driver stops publishing `/arm/joint_states`.
 
 ## Testing without hardware
 

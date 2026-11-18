@@ -1,11 +1,12 @@
 // Arm firmware configuration, shared by the master and the four slaves (one goBILDA gearmotor each).
+// I2C is on SDA 21 / SCL 22 and the motor / encoder pins follow the arm PCB schematic (board wiring below).
 // Values marked PLACEHOLDER are not decided yet: see ARM_OPEN_QUESTIONS.md at the repository root.
 #pragma once
 
 #include <stdint.h>
 
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 1
+#define FIRMWARE_VERSION_MINOR 2
 #define FIRMWARE_VERSION_PATCH 0
 
 // ------------------------------------------------------------------------------------------- control mode
@@ -33,7 +34,7 @@
 #define INFO_PERIOD_MS 1000     // ARM_INFO to the PC
 
 // ------------------------------------------------------------------------------------------- I2C bus
-// PLACEHOLDER pins, speed and addresses: the defaults of the DOIT DevKit V1 (SDA 21, SCL 22) at 100 kHz.
+// SDA 21 / SCL 22 from the arm PCB schematic. PLACEHOLDER speed and addresses: 100 kHz, 0x10-0x13.
 // Every board on the bus needs a common ground. Fit one pair of pull-ups (2.2-4.7 kOhm to 3.3 V) for the whole bus.
 #define I2C_SDA_PIN 21
 #define I2C_SCL_PIN 22
@@ -50,13 +51,30 @@
 // On-board LED: solid = enabled, 5 Hz = e-stop, 10 Hz = fault, 1 Hz = waiting for commands / neutral.
 #define STATUS_LED_PIN 2
 
-// ------------------------------------------------------------------------------------------- slave wiring
-// The same on every slave board: one motor driver (direction + PWM, as on the rover) and the motor's encoder.
-// goBILDA encoders: power them from 3.3 V, or level-shift A/B: ESP32 inputs are not 5 V tolerant.
-#define MOTOR_DIR_PIN 25
-#define MOTOR_PWM_PIN 26
-#define ENCODER_A_PIN 32
-#define ENCODER_B_PIN 33
+// ------------------------------------------------------------------------------------------- PWM limit
+// Hard cap on every motor's PWM, in percent of full (255). The slave clamps its output to it whatever it is sent, so
+// 35 % = PWM 89. The ROS side maps full stick to the same limit (pwm_limit in config/arm.yaml).
+#define PWM_LIMIT_PERCENT 35
+#if PWM_LIMIT_PERCENT <= 0 || PWM_LIMIT_PERCENT > 100
+#error "PWM_LIMIT_PERCENT must be 1..100"
+#endif
+
+// ------------------------------------------------------------------------------------------- board wiring
+// The arm PCB (ESP32-WROOM-32 30-pin dev board, schematic ESP32_INFERNO): two motor-driver channels (DIR + PWM, as on
+// the rover) and two encoder inputs, encoders powered from 3.3 V. Each joint below says which channel its motor uses.
+// GPIO 34 / 35 are input-only and have no internal pull-up: if the encoder outputs are open-collector, fit external
+// pull-ups to 3.3 V. GPIO 12 (MD_1 DIR) is a strapping pin: if the driver pulls it high at power-up the ESP32 does not
+// boot. On the master, the motor-driver pins of both channels are held low.
+struct ChannelPins {
+  uint8_t dir_pin;
+  uint8_t pwm_pin;
+  uint8_t encoder_a_pin;
+  uint8_t encoder_b_pin;
+};
+static constexpr ChannelPins kChannels[2] = {
+    {33, 25, 34, 35},  // channel 0: MD_0 (DIR 33, PWM 25), ENCODER_0 (A 34, B 35)
+    {12, 13, 18, 5},   // channel 1: MD_1 (DIR 12, PWM 13), ENCODER_1 (A 18, B 5)
+};
 
 // ------------------------------------------------------------------------------------------- joints
 // Motor order everywhere: shoulder, elbow, wrist_a, wrist_b. A slave is built for one joint (pio run -e slave_<joint>);
@@ -68,6 +86,7 @@
 struct JointHardware {
   const char* name;
   uint8_t i2c_address;    // PLACEHOLDER
+  uint8_t channel;        // motor-driver + encoder channel on the slave board (kChannels); PLACEHOLDER: 0 on every slave
   uint8_t forward_level;  // DIR pin level for positive rotation
   bool encoder_reversed;  // true if the encoder counts down while the motor turns positive
   // Gearmotor output rpm at PWM 255 (PLACEHOLDER; must match motor_max_rpm in config/arm.yaml). In open loop it is only
@@ -80,11 +99,11 @@ struct JointHardware {
 
 // PLACEHOLDER motors: goBILDA 5203 Yellow Jacket 50.9:1 (117 rpm at 12 V, 1425.1 counts per output revolution).
 // The last two fields follow the control-mode switches above; set them per joint to mix modes.
-static const JointHardware kJoints[4] = {
-    {"shoulder", 0x10, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
-    {"elbow", 0x11, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
-    {"wrist_a", 0x12, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
-    {"wrist_b", 0x13, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+static constexpr JointHardware kJoints[4] = {
+    {"shoulder", 0x10, 0, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"elbow", 0x11, 0, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"wrist_a", 0x12, 0, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"wrist_b", 0x13, 0, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
 };
 
 // ------------------------------------------------------------------------------------------- slave control tuning
@@ -92,8 +111,9 @@ static const JointHardware kJoints[4] = {
 #define SPEED_KP 0.5f            // PWM fraction per unit of speed error / max_rpm
 #define SPEED_KI 2.0f            // the same, per second
 #define SPEED_INTEGRAL_LIMIT 0.3f  // at most 30 % PWM from the integral term
-// Stall: PWM >= 70 % but under 5 % of max_rpm for 1 s -> Fault (hard stop reached, jammed auger, dead encoder).
-#define STALL_PWM_FRACTION 0.7f
+// Stall: PWM >= 30 % but under 5 % of max_rpm for 1 s -> Fault (hard stop reached, jammed auger, dead encoder).
+// Keep STALL_PWM_FRACTION below PWM_LIMIT_PERCENT / 100, or the check can never trigger.
+#define STALL_PWM_FRACTION 0.3f
 #define STALL_RPM_FRACTION 0.05f
 #define STALL_MS 1000
 // Wrong direction: PWM >= 30 % but turning the other way faster than 20 % of max_rpm for 300 ms -> Fault

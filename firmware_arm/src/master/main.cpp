@@ -143,6 +143,13 @@ void send_info() {
 }  // namespace
 
 void setup() {
+  // The master drives no motor. If it sits on the same PCB as the slaves, keep both driver channels off.
+  for (const ChannelPins& channel : kChannels) {
+    pinMode(channel.dir_pin, OUTPUT);
+    pinMode(channel.pwm_pin, OUTPUT);
+    digitalWrite(channel.dir_pin, LOW);
+    digitalWrite(channel.pwm_pin, LOW);
+  }
   pinMode(STATUS_LED_PIN, OUTPUT);
   reset_reason = static_cast<uint8_t>(esp_reset_reason());
   Serial.begin(SERIAL_BAUD);

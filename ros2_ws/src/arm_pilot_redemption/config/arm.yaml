@@ -6,6 +6,9 @@
     # Gearmotor output rpm at full PWM, per motor (shoulder, elbow, wrist_a, wrist_b).
     # MUST equal max_rpm in firmware_arm/include/config.h (kJoints); the driver warns if not.
     motor_max_rpm: [117.0, 117.0, 117.0, 117.0]   # PLACEHOLDER: goBILDA 5203 50.9:1
+    # Full stick = this fraction of full PWM on every motor (0.35 = PWM 89). The firmware also clamps to
+    # PWM_LIMIT_PERCENT in firmware_arm/include/config.h: keep this at or below it.
+    pwm_limit: 0.35
     # Gearmotor output revolutions per joint revolution: everything between the goBILDA gearbox and the joint.
     shoulder_ratio: 1.0        # PLACEHOLDER: worm gearbox ratio (x any belt/gear after it)
     elbow_ratio: 1.0           # PLACEHOLDER: worm gearbox ratio
@@ -35,7 +38,7 @@ arm_teleop:
     wrist_roll_invert: true
     wrist_roll_positive_button: -1
     wrist_roll_negative_button: -1
-    # rad/s at full input; <= 0 = the joint's top speed (its motors at full PWM) from the gearing above.
+    # rad/s at full input; <= 0 = the joint's speed with its motors at pwm_limit (from the gearing above).
     shoulder_pitch_max_velocity: -1.0
     elbow_pitch_max_velocity: -1.0
     wrist_pitch_max_velocity: -1.0
