@@ -19,14 +19,16 @@
 
 arm_teleop:
   ros__parameters:
-    # PS5 DualSense through joy's joy_node (base_station.launch.py). VERIFY every index with `ros2 topic echo /joy`
-    # (README_ARM.md): the rover's drive.yaml found different indices on its PS5 than the usual Linux layout used here.
+    # GameSir-T3 Lite W (CosmicByte) through joy's joy_node (base_station.launch.py), from the kernel's map of the pad:
+    #   axes 0 left X, 1 left Y, 2 right X, 3 right Y, 4 / 5 the triggers (rest at +1.0: never map them), 6 D-pad X,
+    #   7 D-pad Y (joy: up / left = +1). Buttons 0 A, 1 B, 3 X, 4 Y, 6 LB, 7 RB, 8 LT, 9 RT, 10 Back, 11 Start, 12 Home.
+    # Verify with `ros2 topic echo /joy`. For a PS5 DualSense: elbow axis 4, slow 4, e-stop 1, release 9.
     # Each joint takes one axis (the D-pad shows up as two axes) and/or a pair of buttons; -1 = unused.
     shoulder_pitch_axis: 1             # left stick up/down: up = +1 = shoulder up
     shoulder_pitch_invert: false
     shoulder_pitch_positive_button: -1
     shoulder_pitch_negative_button: -1
-    elbow_pitch_axis: 4                # right stick up/down: up = +1 = elbow up
+    elbow_pitch_axis: 3                # right stick up/down: up = +1 = elbow up
     elbow_pitch_invert: false
     elbow_pitch_positive_button: -1
     elbow_pitch_negative_button: -1
@@ -44,10 +46,10 @@ arm_teleop:
     wrist_pitch_max_velocity: -1.0
     wrist_roll_max_velocity: -1.0
     deadzone: 0.08
-    slow_button: 4             # L1 held = slow mode (-1 disables)
+    slow_button: 6             # LB held = slow mode (-1 disables)
     slow_scale: 0.35
-    estop_button: 1            # Circle: latch the e-stop
-    release_button: 9          # Options: release the e-stop (sticks and D-pad centred)
+    estop_button: 1            # B: latch the e-stop
+    release_button: 11         # Start: release the e-stop (sticks and D-pad centred)
     joy_timeout_s: 0.5         # joystick silent this long = e-stop
     publish_rate_hz: 20.0
     estop_rate_hz: 10.0
