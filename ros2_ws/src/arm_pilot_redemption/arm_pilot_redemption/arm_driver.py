@@ -210,16 +210,20 @@ class ArmDriver(Node):
             if motor.known and self.status is not None and motor.firmware_version != self.status.firmware_version:
                 self.warn_once(f'fw-{name}', f'{name} slave firmware {".".join(map(str, motor.firmware_version))} differs '
                                              f'from the master\'s {".".join(map(str, self.status.firmware_version))}')
+        if all(motor.known for motor in info) and not all(motor.has_encoder for motor in info):
+            self.warn_once('no-encoders', 'slaves report no encoders (open-loop firmware, ENCODERS_WIRED 0): '
+                                          '/arm/joint_states is not published')
 
     def publish_joint_states(self, status: protocol.ArmStatus) -> None:
+        if self.info is None or not all(motor.known and motor.has_encoder for motor in self.info):
+            return  # without encoders there is nothing true to report
         message = JointState()
         message.header.stamp = self.get_clock().now().to_msg()
         message.name = list(JOINTS)
         message.velocity = [float(v) for v in motor_rpm_to_joint_rad_s([m.velocity_rpm for m in status.motors], self.geometry)]
-        if self.info is not None and all(motor.known for motor in self.info):
-            # Relative to where each slave powered up: there is no homing yet.
-            revolutions = [m.position / i.counts_per_rev for m, i in zip(status.motors, self.info)]
-            message.position = [float(p) for p in motor_revolutions_to_joint_rad(revolutions, self.geometry)]
+        # Relative to where each slave powered up: there is no homing yet.
+        revolutions = [m.position / i.counts_per_rev for m, i in zip(status.motors, self.info)]
+        message.position = [float(p) for p in motor_revolutions_to_joint_rad(revolutions, self.geometry)]
         self.joint_states.publish(message)
 
     def publish_diagnostics(self) -> None:

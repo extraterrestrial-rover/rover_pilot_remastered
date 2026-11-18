@@ -248,12 +248,18 @@ def parse_arm_status(payload: bytes) -> ArmStatus | None:
 @dataclass(frozen=True)
 class MotorInfo:
     max_rpm: float  # the slave's open-loop calibration: PWM 255 == this gearmotor rpm (0 = not heard from yet)
-    counts_per_rev: float  # encoder counts per gearmotor output revolution
+    counts_per_rev: float  # encoder counts per gearmotor output revolution (0 = no encoder wired)
     firmware_version: tuple[int, int, int]
     reset_reason: int
 
     @property
     def known(self) -> bool:
+        """The master has heard from this slave."""
+        return self.max_rpm > 0
+
+    @property
+    def has_encoder(self) -> bool:
+        """The slave's firmware reads an encoder (open-loop firmware without encoders reports 0 counts per rev)."""
         return self.counts_per_rev > 0
 
 

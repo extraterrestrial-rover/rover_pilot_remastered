@@ -22,10 +22,10 @@ The base station and the arm computer can be the same laptop: run both launch fi
 The arm packet types (`0x83`, `0x05`, `0x06`) differ from the rover's, so a rover drive ESP32 and the arm master never act on each other's commands.
 
 New for the arm:
-- **Encoders and speed control.** Each slave measures its motor speed from the goBILDA encoder. It runs feed-forward plus PI speed control, so the speed holds under load. `/arm/joint_states` reports joint angles and rates.
+- **Open-loop control with encoder readout (the current default).** Each slave sets PWM in proportion to the command, as on the rover, with no PID. It still reads its goBILDA encoder and reports the count and speed, but never acts on them. You can see the values in `/arm/joint_states`, `/diagnostics` (`position_counts`, `rpm`), `tools/arm_joint_test.py` and each slave's USB printout. PI speed control and the encoder fault checks are built in but switched off (`SPEED_CONTROL`, `ENCODER_FAULT_CHECKS` in `config.h`).
 - **Bevel-gear kinematics.** Turning both wrist motors the same way pitches the wrist. Turning them opposite ways rolls it, which drives the auger. If both commands together would exceed a motor's top speed, both wrist motors are scaled down together, so the wrist keeps moving in the commanded direction.
 - **Master/slave safety.** Nothing moves unless all four slaves answer and are healthy. A lost, hung, misaddressed or faulted slave stops **all four** motors, because with a differential wrist one motor stopping alone would move the wrist the wrong way.
-- **Stall and wrong-direction detection.** A motor driving hard against a hard stop, a jammed auger or a dead encoder is stopped after 1 s. A motor whose encoder counts against its PWM (reversed wiring) is stopped after 0.3 s, before speed control can run it away.
+- **Stall and wrong-direction detection (off by default, `ENCODER_FAULT_CHECKS 1` to enable).** When it is on, a motor driving hard against a hard stop, a jammed auger or a dead encoder is stopped after 1 s. A motor whose encoder counts against its PWM (reversed wiring) is stopped after 0.3 s. Turn this check on before enabling speed control: with a reversed encoder, speed control would otherwise run the motor away.
 
 ## Controls (PS5)
 
@@ -52,7 +52,7 @@ The e-stop starts **latched**. After launching, centre everything and press Opti
 | `arm_driver` killed, arm computer sleeps, USB unplugged | No commands reach the master; master timeout | ≤ 0.3 s | restart; the master waits for centred inputs |
 | Master resets or hangs | The slaves hear nothing; each stops its own motor (a hung master is then reset by its watchdog within 1 s) | 0.1 s | the master waits for centred inputs |
 | A slave stops answering (wire, power, crash) | Master: FAULT, every motor stops, the log names the slave | ≤ 0.1 s + one bus cycle | fix it, then **Circle, then Options** |
-| A slave stalls or turns against its PWM | Slave: FAULT; master: FAULT, every motor stops | stall 1 s, direction 0.3 s | **Circle, then Options** |
+| A slave stalls or turns against its PWM (only with `ENCODER_FAULT_CHECKS 1`; off by default) | Slave: FAULT; master: FAULT, every motor stops | stall 1 s, direction 0.3 s | **Circle, then Options** |
 | A slave built for the wrong joint | The master will not enable (`WAIT_SLAVES`); the log names it | does not start | reflash that board |
 | Commands resume with an input pushed | Stays stopped (`WAIT_NEUTRAL`) | — | centre the inputs |
 | Kill switch | Motor power cut | immediate | switch on, then as above |
@@ -106,7 +106,7 @@ pio run -e slave_wrist_b -t upload
 
 **Label each slave board** with its joint. If a board ends up in the wrong place, the master refuses to enable and names it.
 
-A slave's USB port prints one line twice a second, for example `shoulder 0x10 fw 1.0.0  ENABLED  pwm  51  23.4 rpm  pos  1234  bad 0`. Open it with `pio device monitor -e slave_shoulder` to check that board on the bench. The master's serial line is binary: use `tools/arm_joint_test.py` or the driver's logs instead.
+A slave's USB port prints one line twice a second, for example `shoulder 0x10 fw 1.1.0  ENABLED  pwm  51  23.4 rpm  pos  1234  bad 0`. Open it with `pio device monitor -e slave_shoulder` to check that board on the bench. The master's serial line is binary: use `tools/arm_joint_test.py` or the driver's logs instead.
 
 ### 2. Arm computer (Ubuntu 22.04 + ROS 2 Humble)
 
@@ -161,10 +161,10 @@ The arm log shows every state change and every slave problem by name, for exampl
    ```bash
    python3 ~/rover_pilot_remastered/tools/arm_joint_test.py /dev/arm-master
    ```
-   It waits until the master and all four slaves are ready, then turns each motor positive and back at 20 % for 1 s. It then pitches the wrist up and back, and rolls it positive and back. Every line shows the firmware version (it must say **fw 1.0.0**) and the PWM, rpm and encoder count of each motor. Check each step:
+   It waits until the master and all four slaves are ready, then turns each motor positive and back at 20 % for 1 s. It then pitches the wrist up and back, and rolls it positive and back. Every line shows the firmware version (it must say **fw 1.1.0**) and the PWM, rpm and encoder count of each motor. Check each step:
    - **The named motor moves.** If another motor moves, that board got the wrong environment, or its address is wrong.
    - **Positive is the positive direction.** Shoulder and elbow should go up. Wrist pitch should go up. Wrist roll should turn the auger its drilling way. If one is reversed, flip that joint's `forward_level` in `config.h`.
-   - **The count rises while the PWM is positive.** If it falls, set `encoder_reversed`. With the encoder reversed, the slave stops itself after 0.3 s with "turning against its PWM".
+   - **The count rises while the PWM is positive.** If it falls, set `encoder_reversed`. With the encoder reversed and `ENCODER_FAULT_CHECKS 1`, the slave stops itself after 0.3 s with "turning against its PWM".
    - **The rpm is close to `max_rpm` × 20 %.**
    - **Wrist pitch and roll are not swapped.** If "pitch" rolls the wrist, one wrist motor's `forward_level` is wrong.
 2. **Joystick:** each input moves its joint the right way, and L1 slows everything.
@@ -193,9 +193,10 @@ The arm log shows every state change and every slave problem by name, for exampl
 | `cmd_timeout_s` / `estop_timeout_s` | 0.3 / 0.5 | Arm side: stale joint command → zero; stale heartbeat → e-stop |
 | `kJoints` (config.h) | placeholders | Per joint: I2C address, `forward_level`, `encoder_reversed`, `max_rpm`, `counts_per_rev`, `encoder_fitted`, `closed_loop` |
 | `SPEED_KP`, `SPEED_KI` | 0.5, 2.0 | Speed loop, as a PWM fraction per unit of speed error / max rpm (per second for KI) |
-| `STALL_*`, `REVERSE_*` | 70 % / 5 % / 1 s, 30 % / 20 % / 0.3 s | Stall and wrong-direction detection |
+| `SPEED_CONTROL`, `ENCODERS_WIRED`, `ENCODER_FAULT_CHECKS` | 0, 1, 0 | Control mode: open loop, encoders read and reported, no action on them |
+| `STALL_*`, `REVERSE_*` | 70 % / 5 % / 1 s, 30 % / 20 % / 0.3 s | Stall and wrong-direction detection (when `ENCODER_FAULT_CHECKS 1`) |
 
-The gear ratios only change the units of `/arm/joint_cmd` and `/arm/joint_states`. Full stick always means the motors at full PWM, unless `<joint>_max_velocity` is set. Set `closed_loop = false` in `kJoints` to run a joint open-loop like the rover. Set `encoder_fitted = false` if a joint has no encoder wired yet. That turns off its stall and direction checks too.
+The gear ratios only change the units of `/arm/joint_cmd` and `/arm/joint_states`. Full stick always means the motors at full PWM, unless `<joint>_max_velocity` is set. In open loop, `max_rpm` only scales the command to PWM: full stick is PWM 255 whatever the motor really does, as long as `max_rpm` matches `motor_max_rpm`. The switches at the top of `config.h` set the mode for every joint; the last two fields of each `kJoints` entry (`encoder_fitted`, `closed_loop`) can override it per joint. With `ENCODERS_WIRED 0`, slaves report 0 counts per rev and the driver stops publishing `/arm/joint_states`.
 
 ## Testing without hardware
 
@@ -233,7 +234,7 @@ States: `BOOT`, `NO_COMMAND`, `ESTOP`, `WAIT_NEUTRAL`, `ENABLED`, `FAULT`, `WAIT
 
 ## Known limits
 
-- **No homing.** Joint positions in `/arm/joint_states` count from where each slave powered up, and there are no soft joint limits. The stall detection (1 s at ≥ 70 % PWM) is the only protection against driving into a hard stop. Keep speeds low near the ends of travel.
-- The speed-loop gains are untuned defaults. Tune them on the real arm (see [ARM_OPEN_QUESTIONS.md](ARM_OPEN_QUESTIONS.md)).
+- **No homing.** Joint positions in `/arm/joint_states` count from where each slave powered up, and there are no soft joint limits. With the encoder checks off (the default), nothing in software stops a motor driving into a hard stop: the operator, the e-stop and the kill switch do. Keep speeds low near the ends of travel.
+- Open loop: speed varies with load and battery voltage. If speed control is turned on later, its gains are untuned defaults. Tune them on the real arm (see [ARM_OPEN_QUESTIONS.md](ARM_OPEN_QUESTIONS.md)).
 - The auger is on the D-pad, so it runs at a fixed speed (full, or 35 % with L1). Proportional control would need another input.
 - The software e-stop depends on the laptops and the link; it does not replace the physical kill switch.

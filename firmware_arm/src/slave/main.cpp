@@ -41,10 +41,10 @@ const arm::JointConfig kConfig = {
     SPEED_INTEGRAL_LIMIT,
     STALL_PWM_FRACTION,
     STALL_RPM_FRACTION,
-    STALL_MS,
+    ENCODER_FAULT_CHECKS ? STALL_MS : 0u,  // 0 disables the check
     REVERSE_PWM_FRACTION,
     REVERSE_RPM_FRACTION,
-    REVERSE_MS,
+    ENCODER_FAULT_CHECKS ? REVERSE_MS : 0u,
 };
 const char* const kStateNames[] = {"BOOT", "NO_COMMAND", "ESTOP", "WAIT_NEUTRAL", "ENABLED", "FAULT", "WAIT_SLAVES"};
 
@@ -126,7 +126,8 @@ void publish_status(uint32_t now_ms) {
   const uint32_t age = controller.command_age_ms(now_ms);
   status.command_age_ms = age > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(age);
   status.max_rpm_x10 = static_cast<uint16_t>(kJoint.max_rpm * 10.0f + 0.5f);
-  status.counts_per_rev_x100 = static_cast<uint32_t>(kJoint.counts_per_rev * 100.0f + 0.5f);
+  // 0 tells the PC there is no encoder: it then publishes no joint positions or speeds.
+  status.counts_per_rev_x100 = kJoint.encoder_fitted ? static_cast<uint32_t>(kJoint.counts_per_rev * 100.0f + 0.5f) : 0;
   status.version[0] = FIRMWARE_VERSION_MAJOR;
   status.version[1] = FIRMWARE_VERSION_MINOR;
   status.version[2] = FIRMWARE_VERSION_PATCH;

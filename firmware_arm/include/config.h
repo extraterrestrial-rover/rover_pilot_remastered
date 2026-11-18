@@ -5,8 +5,26 @@
 #include <stdint.h>
 
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 0
+#define FIRMWARE_VERSION_MINOR 1
 #define FIRMWARE_VERSION_PATCH 0
+
+// ------------------------------------------------------------------------------------------- control mode
+// Current plan: open loop with the encoders read and reported only. The PWM never depends on the encoder.
+// SPEED_CONTROL 0 = open loop (as on the rover): PWM = command / max_rpm * 255, no PID. 1 = PI speed control on the
+// encoder (needs ENCODERS_WIRED 1). The setpoint ramp and every safety rule apply in both modes.
+#define SPEED_CONTROL 0
+// ENCODERS_WIRED 1 = encoder A/B connected: speed and count are measured and sent to the PC (/diagnostics,
+// /arm/joint_states, the slave's USB printout). 0 = not connected: nothing reported.
+#define ENCODERS_WIRED 1
+// ENCODER_FAULT_CHECKS 1 = a slave stops its motor and latches FAULT on a stall or on turning against its PWM
+// (STALL_* / REVERSE_* below). 0 = off: the encoder value is only reported, never acted on.
+#define ENCODER_FAULT_CHECKS 0
+#if SPEED_CONTROL && !ENCODERS_WIRED
+#error "SPEED_CONTROL needs ENCODERS_WIRED"
+#endif
+#if ENCODER_FAULT_CHECKS && !ENCODERS_WIRED
+#error "ENCODER_FAULT_CHECKS needs ENCODERS_WIRED"
+#endif
 
 // ------------------------------------------------------------------------------------------- master <-> PC (USB)
 #define SERIAL_BAUD 115200      // must match the arm driver's `baud` parameter
@@ -52,18 +70,21 @@ struct JointHardware {
   uint8_t i2c_address;    // PLACEHOLDER
   uint8_t forward_level;  // DIR pin level for positive rotation
   bool encoder_reversed;  // true if the encoder counts down while the motor turns positive
-  float max_rpm;          // gearmotor output rpm at PWM 255 (PLACEHOLDER; must match motor_max_rpm in config/arm.yaml)
+  // Gearmotor output rpm at PWM 255 (PLACEHOLDER; must match motor_max_rpm in config/arm.yaml). In open loop it is only
+  // the scale between the rpm in a command and the PWM: full stick is PWM 255 whatever the real motor speed.
+  float max_rpm;
   float counts_per_rev;   // encoder counts per gearmotor output revolution (PLACEHOLDER)
-  bool encoder_fitted;    // false = open loop, no stall / direction checks
+  bool encoder_fitted;    // false = no stall / direction checks, speed and position not reported
   bool closed_loop;       // PI speed control on top of the open-loop feed-forward
 };
 
 // PLACEHOLDER motors: goBILDA 5203 Yellow Jacket 50.9:1 (117 rpm at 12 V, 1425.1 counts per output revolution).
+// The last two fields follow the control-mode switches above; set them per joint to mix modes.
 static const JointHardware kJoints[4] = {
-    {"shoulder", 0x10, 1, false, 117.0f, 1425.1f, true, true},
-    {"elbow", 0x11, 1, false, 117.0f, 1425.1f, true, true},
-    {"wrist_a", 0x12, 1, false, 117.0f, 1425.1f, true, true},
-    {"wrist_b", 0x13, 1, false, 117.0f, 1425.1f, true, true},
+    {"shoulder", 0x10, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"elbow", 0x11, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"wrist_a", 0x12, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
+    {"wrist_b", 0x13, 1, false, 117.0f, 1425.1f, ENCODERS_WIRED != 0, SPEED_CONTROL != 0},
 };
 
 // ------------------------------------------------------------------------------------------- slave control tuning

@@ -18,7 +18,7 @@ Decisions still open for the arm, with what the code does until they are made. U
 | 10 | **Auger speed control**: fixed speed on the D-pad is fine, or proportional (e.g. on R2)? | D-pad: full speed, 35 % with L1 | `arm_teleop` mapping (a trigger rests at +1.0, so it would need its own handling) |
 | 11 | **Which computer runs `arm_driver`**: the base station laptop with the master on its USB, or a computer on the arm connected through the switch? | either works; both launch files can run on one laptop | launch / DDS setup |
 | 12 | **Power and kill switch**: are the slaves powered from the motor battery (through a regulator) or from USB? Does the kill switch cut them? | not assumed; the boot interlock and timeouts cover both | wiring |
-| 13 | **Speed-loop tuning** on the real arm, and stall thresholds for the auger in soil | KP 0.5, KI 2.0; stall at ≥ 70 % PWM and < 5 % speed for 1 s | `config.h`: `SPEED_KP`, `SPEED_KI`, `STALL_*`, `REVERSE_*` |
+| 13 | **Encoder fault checks**: should a slave stop its motor on a stall (≥ 70 % PWM, < 5 % speed for 1 s) or when its encoder counts against its PWM? Later: speed-loop tuning if speed control is turned on | off: the encoder is only reported (`ENCODER_FAULT_CHECKS 0`); KP 0.5, KI 2.0 unused | `config.h`: `ENCODER_FAULT_CHECKS`, `STALL_*`, `REVERSE_*`, `SPEED_*` |
 | 14 | **Rover integration**: whether the arm later sits on the rover, and whether the rover's e-stop should then stop the arm too | separate: own topics (`/arm/...`), own e-stop, no link to the rover | `config/arm.yaml` topics |
 
 ## Decided
@@ -28,6 +28,7 @@ Decisions still open for the arm, with what the code does until they are made. U
 | Joints | Shoulder pitch and elbow pitch (one motor each, worm gearboxes, so they hold with the motors off), plus a bevel-gear differential wrist: both motors the same way = pitch, opposite ways = roll |
 | End effector | An auger now, driven by the wrist roll (the bevel gear only); a gripper later (see question 9) |
 | Motors | goBILDA gearmotors with built-in encoders; the same motor drivers as the rover (DIR + PWM) |
+| Control mode | Open loop, no PID: PWM in proportion to the joystick. Encoders are read and their count and speed reported to the laptop, but not used (`SPEED_CONTROL 0`, `ENCODERS_WIRED 1`) |
 | Electronics | 1 master ESP32 (USB to the PC) + 4 slave ESP32s, one per motor, on I2C; ESP32 DevKit V1 |
 | Bus length | Short, so 100 kHz with CRC-checked frames |
 | How a slave knows its joint and address | One PlatformIO environment per joint (`pio run -e slave_shoulder` and so on), built in at compile time. The master rejects a slave that reports another joint. (Chosen by Kiro, user to confirm) |

@@ -22,7 +22,7 @@ from pathlib import Path
 from arm_pilot_redemption import protocol
 from arm_pilot_redemption.protocol import BOOT, ENABLED, ESTOP, FAULT, NO_COMMAND, WAIT_NEUTRAL, WAIT_SLAVES
 
-FIRMWARE_VERSION = (1, 0, 0)  # firmware_arm/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
+FIRMWARE_VERSION = (1, 1, 0)  # firmware_arm/include/config.h FIRMWARE_VERSION_*: the version this simulator mirrors
 MAX_RPM, COUNTS_PER_REV = 117.0, 1425.1  # config.h placeholder motors
 BUS_PERIOD_S, CONTROL_PERIOD_S, STATUS_PERIOD_S, INFO_PERIOD_S = 0.02, 0.01, 0.05, 1.0
 
